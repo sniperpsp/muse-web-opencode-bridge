@@ -1,0 +1,11 @@
+.git
+node_modules
+npm-debug.log
+.env
+.env.*
+*.log
+coverage
+dist
+obscura-profile
+chromium-profile
+muse-session.json

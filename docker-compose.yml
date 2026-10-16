@@ -1,0 +1,18 @@
+services:
+  muse-bridge:
+    build: .
+    image: muse-opencode-bridge:local
+    container_name: muse-opencode-bridge
+    init: true
+    restart: unless-stopped
+    shm_size: 2gb
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:7900"
+    volumes:
+      - muse-bridge-data:/data
+
+volumes:
+  muse-bridge-data:
+    external: true
+    name: muse-opencode-bridge-data

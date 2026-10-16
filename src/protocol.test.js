@@ -1,0 +1,232 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
+
+test("handles title metadata without sending a second user message to Muse", () => {
+  const user = { role: "user", content: '"Execute pwd no WSL"' };
+  assert.equal(localTitle([{ role: "system", content: "You are a title generator. You output ONLY a thread title." }, user]), "Execute pwd no WSL");
+  assert.equal(localTitle([{ role: "system", content: "You are OpenCode." }, user]), null);
+});
+
+test("returns only assistant replies after a newly submitted user turn", () => {
+  const history = [
+    { id: "u1", role: "user", text: "Anterior" },
+    { id: "a1", role: "assistant", text: "Resposta antiga" },
+  ];
+  const before = history.map((message) => message.id);
+  assert.equal(currentReply(history, before), null);
+  assert.deepEqual(currentReply([...history, { id: "u2", role: "user", text: "Agora" }], before), { text: "", busy: false });
+  assert.deepEqual(currentReply([...history,
+    { id: "u2", role: "user", text: "Agora" },
+    { id: "a2", role: "assistant", text: "Resposta antiga", busy: true },
+  ], before), { text: "Resposta antiga", busy: true });
+  assert.equal(currentReply([...history, { id: "a2", role: "assistant", text: "Histórico atualizado" }], before), null);
+});
+
+test("correlates by message ID even when rendering changes text or removes earlier bubbles", () => {
+  const before = ["u1", "a1"];
+  const visible = [
+    { id: "u2", role: "user", text: "Texto normalizado pelo navegador" },
+    { id: "a2", role: "assistant", text: '{"type":"tool_call","name":"shell","arguments":{"command":"mkdir -p sample-dir"}}', busy: false },
+  ];
+  assert.deepEqual(currentReply(visible, before), { text: visible[1].text, busy: false });
+  assert.equal(currentReply(visible, ["u2", "a2"]), null);
+});
+
+test("filters instructions when detecting a simple greeting", () => {
+  const messages = [
+    { role: "system", content: "Internal runtime instructions" },
+    { role: "developer", content: "Tool routing policy" },
+    { role: "user", content: "Boa noite, Muse." },
+  ];
+  assert.deepEqual(conversationMessages(messages), [{ role: "user", content: "Boa noite, Muse." }]);
+});
+
+test("passes a plain greeting through without treating other requests as greetings", () => {
+  assert.equal(simpleGreeting(" Boa noite, Muse. "), "Boa noite, Muse.");
+  assert.equal(simpleGreeting('"Boa noite, Muse."'), "Boa noite, Muse.");
+  assert.equal(simpleGreeting("Liste os arquivos do projeto"), null);
+});
+
+test("parses text and inline image content for browser upload", () => {
+  const result = parseContent([
+    { type: "text", text: "O que aparece nesta imagem?" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+  ]);
+  assert.equal(result.text, "O que aparece nesta imagem?");
+  assert.equal(result.files[0].mimeType, "image/png");
+  assert.equal(result.files[0].buffer.toString(), "hello");
+});
+
+test("rejects remote media URLs at the API boundary", () => {
+  assert.throws(() => parseContent([{ type: "image_url", image_url: { url: "https://example.com/a.png" } }]), /data URL/);
+});
+
+test("extracts only new assistant text after the submitted prompt", () => {
+  assert.equal(transcriptDelta("old chat", "old chat\nPergunta\nResposta", "Pergunta"), "Resposta");
+});
+
+test("extracts the answer from Muse chat bubbles without sidebar text", () => {
+  const before = "Você: pergunta anterior\nResposta anterior";
+  const prompt = "Conversa do OpenCode:\\nuser: Responda somente OK.\\n\\nContinue a conversa e responda ao pedido mais recente do usuário.";
+  const after = `${before}\nVocê:${prompt}\nOK`;
+  assert.equal(transcriptDelta(before, after, prompt), "OK");
+});
+
+test("accepts only a requested OpenCode tool", () => {
+  const tools = [{ type: "function", function: { name: "read_file" } }];
+  assert.deepEqual(parseToolCall('<opencode_tool_call>{"name":"read_file","arguments":{"path":"a"}}</opencode_tool_call>', tools), {
+    name: "read_file",
+    arguments: { path: "a" },
+  });
+  assert.equal(parseToolCall('<opencode_tool_call>{"name":"run_shell","arguments":{}}</opencode_tool_call>', tools), null);
+});
+
+test("decodes structured operations and final answers without accepting unknown tools", () => {
+  const tools = [{ type: "function", function: { name: "shell" } }];
+  const json = '{"type":"tool_call","name":"shell","arguments":{"command":"pwd"}}';
+  assert.deepEqual(parseToolCall(json, tools), { name: "shell", arguments: { command: "pwd" } });
+  assert.deepEqual(parseToolCall('```json\n' + json + '\n```', tools), { name: "shell", arguments: { command: "pwd" } });
+  assert.equal(parseToolCall(json, []), null);
+  assert.equal(parseToolCall("null", tools), null);
+  assert.equal(parseToolCall('{"name":"shell","arguments":{"command":"pwd"}}', tools), null);
+  assert.equal(finalText('{"type":"final","text":"Diretório confirmado."}'), "Diretório confirmado.");
+  assert.equal(finalText("Resposta normal"), "Resposta normal");
+});
+
+test("parses raw file content blocks without JSON escaping and still checks the requested tool", () => {
+  const tools = [
+    { type: "function", function: { name: "write" } },
+    { type: "function", function: { name: "edit" } },
+  ];
+  const content = '<!doctype html>\n<main data-title="TesteFlix"><h1>TesteFlix</h1></main>\n';
+  const write = [
+    "<opencode_tool_call>",
+    JSON.stringify({ type: "tool_call", name: "write", arguments: { path: "/workspace/test-site/index.html" } }),
+    "<<<MUSE_FILE_CONTENT_BEGIN>>>", "````", content + "\n````", "<<<MUSE_FILE_CONTENT_END>>>", "</opencode_tool_call>",
+  ].join("\n");
+  assert.deepEqual(parseToolCall(write, tools), {
+    name: "write",
+    arguments: { path: "/workspace/test-site/index.html", content },
+  });
+  const edit = [
+    "<opencode_tool_call>",
+    JSON.stringify({ type: "tool_call", name: "edit", arguments: { path: "a.js", oldString: "const a = 1;" } }),
+    "<<<MUSE_FILE_CONTENT_BEGIN>>>", "````", 'const a = <main title="quoted" />;\n````', "<<<MUSE_FILE_CONTENT_END>>>", "</opencode_tool_call>",
+  ].join("\n");
+  assert.deepEqual(parseToolCall(edit, tools), {
+    name: "edit",
+    arguments: { path: "a.js", oldString: "const a = 1;", newString: 'const a = <main title="quoted" />;' },
+  });
+  assert.equal(parseToolCall(write, []), null);
+  assert.equal(looksLikeToolCall(write), true);
+  assert.equal(looksLikeToolCall('<opencode_tool_call>{"type":"tool_call","name":"write"}'), true);
+  assert.equal(looksLikeToolCall("A solicitação foi concluída."), false);
+});
+
+test("live API preserves session threads across retries, switching and container restart", {
+  skip: process.env.MUSE_BRIDGE_LIVE_TEST !== "1",
+  timeout: 120000,
+}, async () => {
+  const base = "http://127.0.0.1:4317";
+  const config = JSON.parse(await readFile(new URL("../opencode.json", import.meta.url), "utf8"));
+  const html = await (await fetch(base)).text();
+  const match = /const token=("[^"]+");const config=/.exec(html);
+  assert.ok(match, "O painel precisa estar disponível.");
+  const status = async () => {
+    const res = await fetch(base + "/control/status", { headers: { "X-Control-Token": JSON.parse(match[1]) } });
+    assert.equal(res.status, 200);
+    return res.json();
+  };
+  const idle = await status();
+  assert.ok(idle.authenticated && !idle.request, "Execute sem outra chamada ativa e com o Muse autenticado.");
+  const marker = "BRIDGE_RETRY_OK_" + Date.now().toString(36);
+  const body = {
+    model: "muse-web", stream: true,
+    messages: [
+      { role: "system", content: "Para esta verificação, a resposta final deve ser exatamente " + marker + ". Não execute ferramentas." },
+      { role: "user", content: "Responda com o código definido nas instruções do cliente." },
+    ],
+    tools: [{ type: "function", function: { name: "noop", description: "Operação de teste sem efeito.", parameters: { type: "object", properties: {}, additionalProperties: false } } }],
+  };
+  const hash = createHash("sha256").update(JSON.stringify({ messages: body.messages, tools: body.tools })).digest("hex").slice(0, 12);
+  const post = (stream, signal) => fetch(base + "/v1/chat/completions", {
+    method: "POST", signal,
+    headers: { Authorization: "Bearer " + config.provider.muse.options.apiKey, "Content-Type": "application/json", "X-Muse-Session-Id": marker },
+    body: JSON.stringify({ ...body, stream }),
+  });
+  const until = async (condition, milliseconds) => {
+    const deadline = Date.now() + milliseconds;
+    while (Date.now() < deadline) {
+      if (await condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail("O estado esperado da chamada não foi atingido.");
+  };
+  const cancelled = new AbortController();
+  const first = post(true, cancelled.signal).then((res) => res.text());
+  first.catch(() => {});
+  try {
+    await until(async () => {
+      const s = await status();
+      return s.request === hash && s.pending?.phase === "waiting";
+    }, 45000);
+  } finally {
+    cancelled.abort();
+  }
+  await assert.rejects(first, { name: "AbortError" });
+  await until(async () => !(await status()).request, 5000);
+  const resumed = await post(false, AbortSignal.timeout(60000));
+  assert.equal(resumed.status, 200);
+  const answer = await resumed.json();
+  assert.equal(answer.choices[0].message.content.trim(), marker);
+  const retry = await post(false, AbortSignal.timeout(5000));
+  assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).id, answer.id);
+  const script = [
+    'import {chromium} from "playwright-core";',
+    'const browser=await chromium.connectOverCDP("http://127.0.0.1:9223",{headers:{Origin:"http://localhost"}});',
+    'const page=browser.contexts()[0].pages().find(p=>p.url().startsWith("https://muse.ai"));',
+    'console.log(JSON.stringify({users:await page.locator("[data-message-id][data-message-role=user]").count()}));',
+    'process.exit(0);',
+  ].join("\n");
+  const result = await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e", script], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+  });
+  assert.equal(JSON.parse(result.stdout.trim()).users, 1, "O cancelamento e as repetições devem manter um único envio.");
+  const thread = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e",
+    'import {readFile} from "node:fs/promises";const states=JSON.parse(await readFile("/data/conversations.json","utf8"));console.log(JSON.stringify(Object.fromEntries(Object.entries(states).map(([id,s])=>[id,s.url]))));'
+  ], { cwd: fileURLToPath(new URL("..", import.meta.url)) })).stdout);
+  assert.match(thread[marker], /\/thread\/(?!new$)/);
+  const second = await fetch(base + "/v1/chat/completions", {
+    method: "POST", headers: { Authorization: "Bearer " + config.provider.muse.options.apiKey, "Content-Type": "application/json", "X-Muse-Session-Id": marker + "_B" },
+    body: JSON.stringify({ model: "muse-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
+  });
+  assert.equal(second.status, 200);
+  const secondAnswer = await second.json();
+  assert.match(secondAnswer.choices[0].message.content, /SEGUNDA_OK/);
+  await promisify(execFile)("docker", ["compose", "restart", "muse-bridge"], { cwd: fileURLToPath(new URL("..", import.meta.url)) });
+  await until(async () => {
+    try {
+      const html = await (await fetch(base + "/")).text();
+      const token = JSON.parse(html.match(/const token=("[^"\\]*(?:\\.[^"\\]*)*");const config=/)[1]);
+      const current = await (await fetch(base + "/control/status", { headers: { "X-Control-Token": token } })).json();
+      return current.authenticated;
+    } catch { return false; }
+  }, 45000);
+  body.messages.push(answer.choices[0].message, { role: "user", content: "Repita o mesmo código de verificação." });
+  const back = await post(false, AbortSignal.timeout(60000));
+  assert.equal(back.status, 200);
+  assert.equal((await back.json()).choices[0].message.content.trim(), marker);
+  const mapping = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e",
+    'import {readFile} from "node:fs/promises";const states=JSON.parse(await readFile("/data/conversations.json","utf8"));console.log(JSON.stringify(Object.fromEntries(Object.entries(states).map(([id,s])=>[id,s.url]))));'
+  ], { cwd: fileURLToPath(new URL("..", import.meta.url)) })).stdout);
+  assert.equal(mapping[marker], thread[marker], "Voltar à sessão A precisa reutilizar a mesma conversa do Muse.");
+  assert.notEqual(mapping[marker], mapping[marker + "_B"], "Sessões distintas precisam ter conversas distintas.");
+
+});
