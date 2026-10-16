@@ -5,3 +5,5 @@ data/
 opencode.json
 opencode.jsonc
 docs/capturas/
+__pycache__/
+*.pyc

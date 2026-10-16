@@ -2,13 +2,13 @@
 
 > **Projeto comunitário e não oficial.** A ponte controla um Chromium local para usar a interface web do Muse.ai pelo OpenCode e expõe uma API local compatível com OpenAI. A Meta não mantém nem aprova este projeto. Ele usa a conta pessoal do site, não a Meta Model API; saldo, benefícios, limites e regras continuam vinculados à conta. Mudanças no site podem interromper a automação. Confira os termos atuais e não use o projeto para contornar controles, limites ou restrições.
 
-O serviço e o navegador ficam dentro do Docker. As mensagens passam pela sua instalação local e cada pessoa autentica a própria conta.
+O Docker Engine, o serviço e o navegador ficam dentro da distro WSL. Não é necessário instalar Docker Desktop. As mensagens passam pela sua instalação local e cada pessoa autentica a própria conta.
 
 ## Requisitos
 
-- Windows com WSL 2;
-- Python 3 e OpenCode instalados dentro do WSL;
-- Docker Desktop com integração WSL e Docker Compose.
+- Windows com WSL 2 e uma distro Ubuntu ou Debian;
+- Python 3.10+ e OpenCode instalados dentro dessa distro;
+- acesso `sudo` para instalar pacotes do sistema quando o Docker Engine estiver ausente.
 
 ## Instalação
 
@@ -19,6 +19,10 @@ python3 instalar-opencode.py
 ```
 
 O instalador cria o volume Docker persistente, inicia o backend e registra `muse/muse-web` na configuração global do OpenCode, preservando as demais opções. Ele aceita OpenCode v1 e v2 e cria um backup antes de alterar uma configuração existente. JSONC é salvo como JSON; comentários e formatação originais permanecem no backup. A configuração local contém a chave da ponte e fica com permissão restrita ao seu usuário.
+
+Se o Docker Engine não estiver instalado, o instalador configura o repositório APT oficial do Docker e instala o Engine, o CLI e o plugin Compose dentro do WSL. O APT mostra as alterações e pede confirmação. Para usar Docker sem `sudo`, o script também pede autorização para adicionar seu usuário ao grupo `docker`; esse grupo concede privilégios equivalentes a `root`. Depois disso, feche e reabra o terminal WSL e rode o instalador novamente. O script habilita o serviço no `systemd` quando ele está ativo; sem `systemd`, inicia o daemon para a sessão atual. O Engine e os containers ficam na distro Linux, sem depender do Docker Desktop.
+
+Para iniciar o daemon automaticamente ao iniciar a distro, o WSL precisa usar `systemd`. Se estiver desativado, configure `[boot]` com `systemd=true` em `/etc/wsl.conf` e reinicie o WSL com `wsl.exe --shutdown` no PowerShell; consulte a [documentação da Microsoft sobre systemd no WSL](https://learn.microsoft.com/windows/wsl/systemd). A instalação segue o [repositório APT oficial do Docker](https://docs.docker.com/engine/install/).
 
 Para validar o instalador sem iniciar o Docker nem alterar a configuração do OpenCode:
 
@@ -57,6 +61,8 @@ Clientes diretos devem enviar um `X-Muse-Session-Id` estável para cada conversa
 O volume Docker `muse-opencode-bridge-data` guarda o perfil autenticado do Chromium, a chave da API local e os vínculos entre sessões e conversas. Mensagens e anexos enviados à ponte são encaminhados ao Muse. A API e a tela remota são publicadas apenas em `127.0.0.1`.
 
 Não compartilhe seu volume Docker, a chave local, a configuração copiada do painel, cookies ou arquivos de sessão. Cada pessoa deve instalar o projeto e autenticar a própria conta. Não exponha as portas em uma rede pública.
+
+O grupo Linux `docker` pode controlar o daemon e, por isso, tem privilégios equivalentes a `root`; veja os [passos pós-instalação do Docker](https://docs.docker.com/engine/install/linux-postinstall/).
 
 Comandos úteis:
 

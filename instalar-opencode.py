@@ -3,6 +3,7 @@
 
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -20,6 +23,7 @@ VOLUME_NAME = "muse-opencode-bridge-data"
 SERVICE_NAME = "muse-bridge"
 API_URL = "http://127.0.0.1:4317/v1"
 DASHBOARD_URL = "http://127.0.0.1:4317"
+DOCKER_APT_SOURCE_FILE = Path("/etc/apt/sources.list.d/docker.sources")
 
 
 class JsoncError(ValueError):
@@ -197,6 +201,146 @@ def require_command(name):
         raise RuntimeError(f"Não encontrei '{name}'. Instale esse requisito e rode o script novamente.")
 
 
+def is_wsl2():
+    try:
+        release = Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8").casefold()
+    except OSError:
+        return False
+    return "microsoft" in release and ("wsl2" in release or "microsoft-standard" in release)
+
+
+def docker_apt_source(distribution, suite, architecture):
+    if distribution not in {"ubuntu", "debian"}:
+        raise RuntimeError("A instalação automática do Docker Engine suporta Ubuntu ou Debian no WSL 2.")
+    if not re.fullmatch(r"[a-z][a-z0-9.-]*", suite):
+        raise RuntimeError("Não consegui identificar a versão da distro para configurar o repositório Docker.")
+    if architecture not in {"amd64", "arm64", "armhf", "ppc64el", "s390x"}:
+        raise RuntimeError(f"A arquitetura '{architecture}' não é suportada pelo repositório Docker.")
+    return (
+        "Types: deb\n"
+        f"URIs: https://download.docker.com/linux/{distribution}\n"
+        f"Suites: {suite}\n"
+        "Components: stable\n"
+        f"Architectures: {architecture}\n"
+        "Signed-By: /etc/apt/keyrings/docker.asc\n"
+    )
+
+
+def systemd_available():
+    return Path("/run/systemd/system").is_dir()
+
+
+def run_or_raise(command, message):
+    if run(command).returncode != 0:
+        raise RuntimeError(message)
+
+
+def install_docker_engine():
+    if not is_wsl2():
+        raise RuntimeError("Docker Engine requer WSL 2. Confira com 'wsl.exe -l -v' no Windows.")
+    if os.geteuid() == 0:
+        raise RuntimeError("Rode este instalador como seu usuário normal do WSL, sem sudo; ele pedirá sudo quando precisar.")
+    for command in ("sudo", "apt-get", "dpkg"):
+        require_command(command)
+
+    try:
+        os_release = platform.freedesktop_os_release()
+    except OSError as error:
+        raise RuntimeError("Não consegui ler a identificação da distro Linux.") from error
+    distribution = os_release.get("ID", "").lower()
+    suite = (os_release.get("UBUNTU_CODENAME") if distribution == "ubuntu" else os_release.get("VERSION_CODENAME", ""))
+    architecture = run(["dpkg", "--print-architecture"], capture=True)
+    if architecture.returncode != 0:
+        raise RuntimeError("Não consegui identificar a arquitetura do WSL.")
+    source = docker_apt_source(distribution, suite or "", architecture.stdout.strip())
+    repository_file = DOCKER_APT_SOURCE_FILE
+    if repository_file.exists() and repository_file.read_text(encoding="utf-8") != source:
+        raise RuntimeError("Já existe uma configuração diferente em /etc/apt/sources.list.d/docker.sources; revise-a antes de continuar.")
+
+    print("Instalando Docker Engine e o plugin Docker Compose dentro desta distro WSL…")
+    run_or_raise(["sudo", "apt-get", "update"], "Não consegui atualizar os índices do APT.")
+    run_or_raise(
+        ["sudo", "apt-get", "install", "-y", "ca-certificates", "curl"],
+        "Não consegui instalar os certificados e o curl necessários.",
+    )
+    run_or_raise(
+        ["sudo", "install", "-m", "0755", "-d", "/etc/apt/keyrings"],
+        "Não consegui preparar o diretório de chaves do APT.",
+    )
+    run_or_raise(
+        ["sudo", "curl", "-fsSL", f"https://download.docker.com/linux/{distribution}/gpg", "-o", "/etc/apt/keyrings/docker.asc"],
+        "Não consegui baixar a chave oficial do repositório Docker.",
+    )
+    run_or_raise(
+        ["sudo", "chmod", "a+r", "/etc/apt/keyrings/docker.asc"],
+        "Não consegui ajustar a permissão da chave do repositório Docker.",
+    )
+
+    if not repository_file.exists():
+        with tempfile.TemporaryDirectory(prefix="muse-docker-apt-") as directory:
+            source_path = Path(directory) / "docker.sources"
+            source_path.write_text(source, encoding="utf-8")
+            run_or_raise(
+                ["sudo", "install", "-m", "0644", str(source_path), str(repository_file)],
+                "Não consegui configurar o repositório oficial do Docker.",
+            )
+
+    run_or_raise(["sudo", "apt-get", "update"], "Não consegui atualizar os índices do repositório Docker.")
+    run_or_raise(
+        ["sudo", "apt-get", "install", "docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"],
+        "A instalação dos pacotes Docker falhou. Revise a saída do APT e tente novamente.",
+    )
+
+    groups = run(["id", "-nG"], capture=True)
+    if groups.returncode != 0:
+        raise RuntimeError("Não consegui verificar os grupos do usuário atual.")
+    membership_changed = "docker" not in groups.stdout.split()
+    if membership_changed:
+        print("O grupo 'docker' permite usar o daemon sem sudo e concede privilégios equivalentes a root.")
+        if input("Adicionar seu usuário a esse grupo? [S/n] ").strip().casefold() in {"n", "nao", "não"}:
+            raise RuntimeError('Docker instalado, mas o OpenCode precisa do grupo docker. Execute `sudo usermod -aG docker "$USER"` e rode novamente.')
+        user = run(["id", "-un"], capture=True)
+        username = user.stdout.strip()
+        if user.returncode != 0 or not username or not re.fullmatch(r"[a-zA-Z0-9_.-]+", username):
+            raise RuntimeError("Não consegui identificar com segurança o usuário atual do WSL.")
+        run_or_raise(
+            ["sudo", "usermod", "-aG", "docker", username],
+            "Não consegui adicionar o usuário atual ao grupo docker.",
+        )
+
+    if systemd_available():
+        run_or_raise(["sudo", "systemctl", "enable", "--now", "docker"], "Não consegui iniciar o serviço Docker com systemd.")
+    else:
+        run_or_raise(["sudo", "service", "docker", "start"], "Não consegui iniciar o serviço Docker nesta distro WSL.")
+        print("systemd não está ativo; o daemon precisará ser iniciado com 'sudo service docker start' após reiniciar o WSL.")
+    return membership_changed
+
+
+def ensure_docker():
+    if shutil.which("docker") is None:
+        print("Docker Engine não encontrado nesta distro WSL.")
+        membership_changed = install_docker_engine()
+        if membership_changed:
+            print("\nFeche e reabra a distro WSL para ativar o grupo docker e rode novamente este instalador.")
+            return False
+        return True
+    return True
+
+
+def ensure_docker_daemon():
+    result = run(["docker", "info"], capture=True)
+    if result.returncode == 0:
+        return
+    if "permission denied" in (result.stderr or "").casefold():
+        raise RuntimeError("Sem acesso ao daemon Docker. Entre no grupo docker e reabra a sessão WSL.")
+    service = ["sudo", "systemctl", "start", "docker"] if systemd_available() else ["sudo", "service", "docker", "start"]
+    if shutil.which("sudo") is not None:
+        run(service)
+        result = run(["docker", "info"], capture=True)
+    if result.returncode != 0:
+        raise RuntimeError("Docker Engine não está acessível. Confira se o serviço docker está iniciado nesta distro WSL.")
+
+
 def wait_for_dashboard():
     for _ in range(60):
         try:
@@ -248,14 +392,66 @@ def self_test():
 
     key_name, entry = provider_config(1, "test-key-only")
     assert key_name == "provider" and entry["options"]["apiKey"] == "test-key-only"
+
+    module = sys.modules[__name__]
+    assert docker_apt_source("ubuntu", "noble", "amd64") == (
+        "Types: deb\n"
+        "URIs: https://download.docker.com/linux/ubuntu\n"
+        "Suites: noble\n"
+        "Components: stable\n"
+        "Architectures: amd64\n"
+        "Signed-By: /etc/apt/keyrings/docker.asc\n"
+    )
+    commands = []
+    sources = []
+
+    def fake_run(command, *, capture=False):
+        commands.append(command)
+        if command == ["dpkg", "--print-architecture"]:
+            return SimpleNamespace(returncode=0, stdout="amd64\n", stderr="")
+        if command == ["id", "-nG"]:
+            return SimpleNamespace(returncode=0, stdout="bridge-test\n", stderr="")
+        if command == ["id", "-un"]:
+            return SimpleNamespace(returncode=0, stdout="bridge-test\n", stderr="")
+        if command[:3] == ["sudo", "install", "-m"] and command[-1] == str(module.DOCKER_APT_SOURCE_FILE):
+            sources.append(Path(command[-2]).read_text(encoding="utf-8"))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory(prefix="muse-installer-docker-test-") as directory:
+        repo_file = Path(directory) / "docker.sources"
+        with (
+            patch.object(module, "is_wsl2", return_value=True),
+            patch.object(module, "systemd_available", return_value=True),
+            patch.object(module, "DOCKER_APT_SOURCE_FILE", repo_file),
+            patch.object(platform, "freedesktop_os_release", return_value={"ID": "ubuntu", "UBUNTU_CODENAME": "noble"}),
+            patch.object(shutil, "which", return_value="/usr/bin/sudo"),
+            patch.object(os, "geteuid", return_value=1000),
+            patch("builtins.input", return_value=""),
+            patch("builtins.print"),
+            patch.object(module, "run", side_effect=fake_run),
+        ):
+            assert install_docker_engine() is True
+        assert sources == [docker_apt_source("ubuntu", "noble", "amd64")]
+    assert ["sudo", "apt-get", "install", "docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"] in commands
+    assert ["sudo", "usermod", "-aG", "docker", "bridge-test"] in commands
+    assert ["sudo", "systemctl", "enable", "--now", "docker"] in commands
+
+    with (
+        patch.object(shutil, "which", return_value=None),
+        patch.object(module, "install_docker_engine", return_value=True),
+        patch("builtins.print"),
+    ):
+        assert ensure_docker() is False
+
     print("Autoteste do instalador: OK")
 
 
 def install():
     if not sys.platform.startswith("linux"):
         raise RuntimeError("Este instalador foi preparado para Linux/WSL.")
-    for command in ("docker", "opencode"):
-        require_command(command)
+    require_command("opencode")
+    if not ensure_docker():
+        return False
 
     version = run(["opencode", "--version"], capture=True)
     version_text = (version.stdout or version.stderr).strip()
@@ -264,9 +460,8 @@ def install():
         raise RuntimeError(f"Não consegui identificar uma versão compatível do OpenCode: {version_text}")
     major = int(match.group(1))
     if run(["docker", "compose", "version"], capture=True).returncode != 0:
-        raise RuntimeError("Docker Compose não encontrado. Ative a integração do Docker Desktop com o WSL.")
-    if run(["docker", "info"], capture=True).returncode != 0:
-        raise RuntimeError("Docker não está acessível. Abra o Docker Desktop e habilite a integração com o WSL.")
+        raise RuntimeError("Docker Compose não encontrado. Instale o pacote docker-compose-plugin no WSL.")
+    ensure_docker_daemon()
 
     if run(["docker", "volume", "inspect", VOLUME_NAME], capture=True).returncode != 0:
         if run(["docker", "volume", "create", VOLUME_NAME], capture=True).returncode != 0:
@@ -288,6 +483,7 @@ def install():
     print("2. Entre na sua própria conta Muse pelo botão Abrir Chromium e confirme o login.")
     print("3. Reabra o OpenCode e selecione muse/muse-web.")
     print("Não compartilhe o volume Docker nem a chave local; cada computador usa sua própria conta.")
+    return True
 
 
 def main():
@@ -298,7 +494,8 @@ def main():
         print(f"Uso: {Path(sys.argv[0]).name} [--self-test]", file=sys.stderr)
         return 2
     try:
-        install()
+        if not install():
+            return 0
     except (JsoncError, OSError, RuntimeError) as error:
         print(f"Instalação não concluída: {error}", file=sys.stderr)
         return 1
