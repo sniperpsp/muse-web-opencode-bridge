@@ -1,6 +1,11 @@
 services:
   muse-bridge:
-    build: .
+    build:
+      context: .
+      args:
+        MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
+    environment:
+      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-60000}
     image: muse-opencode-bridge:local
     container_name: muse-opencode-bridge
     init: true

@@ -20,6 +20,8 @@ COPY src ./src
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
 RUN chmod 0755 ./docker/entrypoint.sh
 
+ARG MUSE_BUILD_REVISION=unknown
+ENV MUSE_BUILD_REVISION=$MUSE_BUILD_REVISION
 USER node
 EXPOSE 4317 7900
 ENTRYPOINT ["./docker/entrypoint.sh"]

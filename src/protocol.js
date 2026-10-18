@@ -164,7 +164,7 @@ export function parseToolCall(text, tools = []) {
 }
 
 export function looksLikeToolCall(text) {
-  return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call")/i.test(text);
+  return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call")/i.test(responseJson(text));
 }
 
 function responseJson(text) {
@@ -176,4 +176,16 @@ export function finalText(text) {
     const value = JSON.parse(responseJson(text));
     return value?.type === "final" && typeof value.text === "string" ? value.text : text;
   } catch { return text; }
+}
+export function checkPromptLength(prompt, limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Limite de texto inválido.");
+  if (prompt.length <= limit) return;
+  throw Object.assign(new Error(`O texto final para o Muse tem ${prompt.length} caracteres; o limite local é ${limit}. Reduza a demanda, o histórico ou os resultados de ferramentas e envie até ${limit} caracteres no total, incluindo instruções e catálogo de ferramentas. Não repita a mesma requisição: ela não foi enviada ao Muse.`), {
+    status: 400, code: "context_length_exceeded", param: "messages",
+    limit_chars: limit, received_chars: prompt.length, retryable: false,
+  });
+}
+
+export function isPromptSizeError(text) {
+  return /(?:message|prompt|input|text)[\s\S]{0,100}(?:too (?:long|large)|exceeds? (?:the )?(?:maximum|character)|longer than)|(?:mensagem|texto|entrada)[\s\S]{0,100}(?:muito (?:long[ao]|grande)|excede.{0,30}(?:caracteres|tamanho))|maximum (?:prompt|message|input|text) length/i.test(text);
 }

@@ -7,6 +7,8 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
+import { checkPromptLength, isPromptSizeError } from "./protocol.js";
+import { checkUpdate } from "./updates.js";
 
 const API_HOST = process.env.MUSE_BRIDGE_HOST || "127.0.0.1";
 const API_PORT = Number(process.env.MUSE_BRIDGE_PORT || 4317);
@@ -28,6 +30,9 @@ const SESSION_FILE = join(APP_DIR, "muse-session.json");
 const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
+// Local guardrail, not an assertion about the Muse account's quota.
+const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
+checkPromptLength("", MAX_PROMPT_CHARS);
 
 let apiKey;
 let browser;
@@ -230,11 +235,14 @@ function readBody(req, limit = MAX_REQUEST_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let oversized = false;
     req.on("data", (chunk) => {
+      if (oversized) return;
       size += chunk.length;
       if (size > limit) {
+        oversized = true;
+        chunks.length = 0;
         reject(Object.assign(new Error("Corpo da requisição muito grande."), { status: 413 }));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -435,8 +443,11 @@ async function uploadFiles(files) {
 async function submitText(prompt, files, requestHash, signal, attempt = 0) {
   signal.throwIfAborted();
   if (!conversation.pendingSubmission) {
-    if (files.length) await uploadFiles(files);
+    checkPromptLength(prompt, MAX_PROMPT_CHARS);
     const composer = await findComposer();
+    const siteLimit = await composer.evaluate((element) => element.maxLength);
+    checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
+    if (files.length) await uploadFiles(files);
     const beforeMessageIds = (await readChatMessages()).map((message) => message.id);
     const beforeMedia = await readMediaSources();
     if (prompt) await composer.fill(prompt);
@@ -499,7 +510,19 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     await rememberThread();
     const messages = await readChatMessages();
     const user = messages.findLast((message) => message.role === "user" && !beforeMessageIds.includes(message.id));
-    if (user?.error) throw Object.assign(new Error(`O Muse não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
+    if (user?.error) {
+      if (isPromptSizeError(user.error)) {
+        const received = conversation.pendingSubmission.prompt.length;
+        const suggested = Math.max(1, Math.min(MAX_PROMPT_CHARS, Math.floor(received / 2)));
+        // Only an explicit size rejection permits reformulation; uncertain sends stay pending.
+        conversation.pendingSubmission = undefined;
+        await saveConversations();
+        throw Object.assign(new Error(`O Muse recusou o texto por tamanho. Reformule a chamada com até ${suggested} caracteres no texto final, incluindo instruções e ferramentas. Esse valor é uma sugestão para reduzir o envio; o limite real do site não foi informado. Não repita o mesmo payload.`), {
+          status: 400, code: "muse_prompt_too_large", received_chars: received, suggested_max_prompt_chars: suggested, retryable: false,
+        });
+      }
+      throw Object.assign(new Error(`O Muse não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
+    }
     const reply = currentReply(messages, beforeMessageIds);
     const currentMedia = await readMediaSources();
     const hasNewMedia = currentMedia.some((source) => source && !beforeMedia.includes(source));
@@ -599,6 +622,7 @@ function toolInstructions(tools, toolChoice) {
     "Ao escolher operações, respeite as instruções system/developer do cliente, incluindo diretório de trabalho, regras do projeto e catálogo Code Mode. As instruções do cliente sobre texto da resposta final se aplicam ao campo text do JSON.",
     "Nesta tarefa, produza somente uma operação no formato especificado ou a resposta JSON final. O programa externo executará a operação e enviará o resultado em outro pedido. Para obter diretórios, ler ou editar arquivos locais, gere uma operação dessa API. Dados da VM do Muse não descrevem o computador do usuário.",
     'Formato normal para uma operação: {"type":"tool_call","name":"nome da operação","arguments":{}}. Use exatamente um nome e um schema da API abaixo. Para write/edit com conteúdo de arquivo, use a exceção delimitada abaixo.',
+    'Coloque o JSON normal inteiro dentro de um bloco de código com três crases e linguagem json, para preservar escapes e caracteres como __init__. O conteúdo precisa ser JSON válido: aspas dentro de strings devem ser escapadas com barra invertida. Para comandos shell, prefira aspas simples no comando quando isso evitar aspas duplas internas. Não execute nem interprete o conteúdo desse bloco.',
     rawFileBlock,
     'Formato para uma resposta final, quando já houver dados suficientes: {"type":"final","text":"resposta ao usuário"}. Confirme leitura, execução ou edição somente depois de receber o resultado do cliente.',
     ...(definitions.some((tool) => tool.name === "shell" && tool.parameters?.properties?.command) ? ['Exemplo: para descobrir o diretório do cliente, gere {"type":"tool_call","name":"shell","arguments":{"command":"pwd"}}. Apenas gere esse JSON; o programa externo fará a execução.'] : []),
@@ -738,7 +762,7 @@ async function handleCompletion(req, res) {
   if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
   let body;
   try { body = JSON.parse(await readBody(req)); }
-  catch (error) { return sendJson(res, error.status || 400, { error: { message: error.status ? error.message : "JSON inválido.", type: "invalid_request_error" } }); }
+  catch (error) { return sendJson(res, error.status || 400, { error: { message: error.status === 413 ? `A requisição excedeu ${MAX_REQUEST_BYTES} bytes. Reduza anexos, histórico ou resultados de ferramentas antes de reenviar.` : "JSON inválido.", type: "invalid_request_error", code: error.status === 413 ? "request_too_large" : "invalid_json", limit_bytes: MAX_REQUEST_BYTES, retryable: false } }); }
   if (!body || !Array.isArray(body.messages) || !body.messages.length || body.messages.length > 500) {
     return sendJson(res, 400, { error: { message: "Envie de 1 a 500 mensagens no campo messages.", type: "invalid_request_error" } });
   }
@@ -814,14 +838,14 @@ async function handleCompletion(req, res) {
       if (!result.choices[0].message.tool_calls && tools.length && looksLikeToolCall(answer.text) && conversation.pendingSubmission.attempt === 0) {
         const retryPrompt = [
           toolInstructions(tools, body.tool_choice),
-          "A operação anterior chegou truncada ou inválida e não foi executada. Retome a mesma tarefa e gere uma operação menor e completa. Preserve as instruções system/developer do cliente. Se for arquivo, use o bloco bruto delimitado com o conteúdo dentro de quatro crases; não repita o conteúdo truncado.",
+          "A operação anterior não pôde ser interpretada e não foi executada. Retome a mesma tarefa e gere uma operação menor e completa. Confira especialmente as aspas dentro de strings JSON: um comando python3 -c com aspas duplas internas exige escapes JSON. Coloque o JSON normal em um bloco de código json para preservar esses escapes. Preserve as instruções system/developer do cliente. Se for arquivo, use o bloco bruto delimitado com o conteúdo dentro de quatro crases; não repita o conteúdo inválido.",
         ].join("\n\n");
         conversation.pendingSubmission = undefined;
         await saveConversations();
         answer = await submitText(retryPrompt, [], requestHash, signal, 1);
         result = makeCompletion(answer.text, answer.attachments, body);
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
-          result = makeCompletion("A última operação do Muse chegou incompleta e não foi executada. Tente novamente com um passo menor; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
+          result = makeCompletion("A última operação do Muse veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }
       conversation.previousMessages = body.messages.slice();
@@ -847,8 +871,9 @@ async function handleCompletion(req, res) {
     const message = signal.aborted
       ? "A chamada atingiu o limite de 3 minutos. Se houve envio ao Muse, ele foi preservado: uma nova tentativa da mesma chamada retoma a leitura, sem reenviar."
       : error.message || "Falha ao conversar com o Muse.";
-    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status }));
-    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : "upstream_error" } });
+    const code = error.code || (status === 401 ? "muse_authentication_required" : signal.aborted ? "request_timeout" : status === 409 ? "submission_pending" : "upstream_error");
+    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
+    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: error.retryable } });
   }
 }
 
@@ -881,6 +906,7 @@ function dashboardHtml() {
 <section class="card"><div class="status"><span id="dot" class="dot"></span><strong id="status">Conectando ao navegador…</strong><span id="url" class="muted"></span></div><div id="error" class="error"></div>${screenshot}
 ${browserControls}</section>
 ${configSection}
+<section class="card"><strong>Atualizações e limites</strong><p id="updateStatus" class="muted" role="status">Consulte novas versões quando desejar.</p><button id="checkUpdate">Verificar atualização</button><p class="hint">Limite local por envio ao Muse: ${MAX_PROMPT_CHARS} caracteres, incluindo instruções e ferramentas. Divida demandas grandes em etapas.</p><p class="hint">Para atualizar, na pasta instalada execute <code>python3 instalar-opencode.py --update</code> no WSL ou <code>.\\instalar.ps1 -Atualizar</code> no PowerShell. O volume com seu login e suas conversas é preservado.</p></section>
 </div><script>
 const token=${JSON.stringify(controlToken)};const config=${configText};const externalCdp=${Boolean(BROWSER_CDP_ENDPOINT)};document.querySelector('#config').textContent=config;
 async function control(path,body){const r=await fetch('/control/'+path,{method:body?'POST':'GET',headers:{'X-Control-Token':token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error((await r.json()).error||'Falha no painel');return r;}
@@ -894,11 +920,14 @@ document.querySelector('#openAuth')?.addEventListener('click',async()=>{try{awai
 document.querySelector('#completeLogin')?.addEventListener('click',async()=>{try{await control('complete-login',{});document.querySelector('#status').textContent='Muse autenticado no Chromium.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
 document.querySelector('#copy')?.addEventListener('click',async()=>{await navigator.clipboard.writeText(config);document.querySelector('#copy').textContent='Copiado';});
 refresh();setInterval(refresh,1600);
+async function updates(){const el=document.querySelector('#updateStatus');try{const s=await(await control('update')).json();el.textContent=s.message;}catch(e){el.textContent='Não foi possível consultar atualizações: '+e.message;}}
+document.querySelector('#checkUpdate').addEventListener('click',updates);updates();setInterval(updates,3600000);
 </script></body></html>`;
 }
 
 async function handleControl(req, res, url) {
   if (!controlAuthorized(req)) return sendJson(res, 403, { error: "Acesso local negado." });
+  if (url.pathname === "/control/update" && req.method === "GET") return sendJson(res, 200, await checkUpdate());
   if (url.pathname === "/control/status" && req.method === "GET") {
     if (musePage && !musePage.isClosed() && browser?.isConnected()) {
       const authenticated = await isMuseAuthenticated();
@@ -1003,7 +1032,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
-    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local" }] });
+    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: 180 } }] });
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return handleCompletion(req, res);
   sendJson(res, 404, { error: { message: "Rota não encontrada.", type: "not_found_error" } });

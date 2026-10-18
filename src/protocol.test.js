@@ -6,6 +6,80 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
+import { checkPromptLength, isPromptSizeError } from "./protocol.js";
+import { updateStatus } from "./updates.js";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:net";
+
+test("HTTP payload limit returns actionable JSON instead of resetting the connection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "muse-http-test-"));
+  const listener = createServer();
+  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  const port = listener.address().port;
+  await new Promise((resolve) => listener.close(resolve));
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./server.js", import.meta.url))], {
+    env: { ...process.env, MUSE_BRIDGE_DATA: directory, MUSE_BRIDGE_HOST: "127.0.0.1", MUSE_BRIDGE_PORT: String(port), MUSE_AUTH_BROWSER: "0", MUSE_CDP_ENDPOINT: "http://127.0.0.1:1", MUSE_CDP_PORT: "9222", MUSE_AUTH_CDP_PORT: "9223", MUSE_MAX_PROMPT_CHARS: "60000" },
+    stdio: "ignore",
+  });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    let ready = false;
+    for (let i = 0; i < 100; i++) {
+      try { ready = (await fetch(base)).ok; } catch {}
+      if (ready) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(ready, "isolated API started");
+    const key = (await readFile(join(directory, "api-key"), "utf8")).trim();
+    const models = await fetch(base + "/v1/models", { headers: { Authorization: `Bearer ${key}` } });
+    assert.equal((await models.json()).data[0].limits.max_prompt_chars, 60000);
+    const dashboard = await (await fetch(base)).text();
+    assert.ok(dashboard.includes("Verificar atualização"));
+    new Function(dashboard.match(/<script>([\s\S]*?)<\/script>/)[1]); // Validate generated browser JS too.
+    const response = await fetch(base + "/v1/chat/completions", {
+      method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "x".repeat(28 * 1024 * 1024) }] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    assert.equal(response.status, 413);
+    const { error } = await response.json();
+    assert.equal(error.code, "request_too_large");
+    assert.equal(error.retryable, false);
+    assert.equal(error.limit_bytes, 28 * 1024 * 1024);
+  } finally {
+    child.kill("SIGTERM");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects oversized final prompts with actionable non-retryable metadata", () => {
+  checkPromptLength("abc", 3);
+  assert.throws(() => checkPromptLength("abcd", 3), (error) => error.status === 400 && error.code === "context_length_exceeded" && error.received_chars === 4 && error.limit_chars === 3 && error.retryable === false);
+  assert.throws(() => checkPromptLength("", NaN));
+  assert.throws(() => checkPromptLength("", 0));
+  checkPromptLength("😀", 2); // HTML maxlength and JS length both count UTF-16 units.
+});
+
+test("only explicit size errors permit a reformulated submission", () => {
+  for (const text of ["Message is too long", "The text you entered is too long", "Mensagem muito longa", "Input exceeds the maximum character count", "Maximum prompt length is 10000"]) assert.ok(isPromptSizeError(text), text);
+  for (const text of ["Rate limit exceeded", "Session expired", "Message failed to send", "Usage limit reached", "Too many requests"]) assert.equal(isPromptSizeError(text), false, text);
+});
+
+test("update checks distinguish newer commits, divergence and network failures", async () => {
+  const revision = "a".repeat(40);
+  for (const [status, state] of [["ahead", "available"], ["identical", "current"], ["diverged", "unknown"], ["behind", "unknown"]]) {
+    const result = await updateStatus(revision, async () => ({ ok: true, json: async () => ({ status }) }));
+    assert.equal(result.state, state);
+  }
+  assert.equal((await updateStatus(revision, async () => { throw new Error("offline"); })).state, "unknown");
+  assert.equal((await updateStatus(revision, async () => ({ ok: false, status: 403 }))).state, "unknown");
+  assert.equal((await updateStatus("unknown", () => { throw new Error("must not fetch"); })).state, "unknown");
+});
 
 test("handles title metadata without sending a second user message to Muse", () => {
   const user = { role: "user", content: '"Execute pwd no WSL"' };
@@ -76,6 +150,17 @@ test("extracts the answer from Muse chat bubbles without sidebar text", () => {
   const prompt = "Conversa do OpenCode:\\nuser: Responda somente OK.\\n\\nContinue a conversa e responda ao pedido mais recente do usuário.";
   const after = `${before}\nVocê:${prompt}\nOK`;
   assert.equal(transcriptDelta(before, after, prompt), "OK");
+});
+
+test("preserves quoted Python commands and rejects invalid JSON without executing it", () => {
+  const tools = [{ type: "function", function: { name: "shell" } }];
+  const command = 'python3 -c "import edge_tts; print(edge_tts.Communicate.__init__.__code__.co_varnames)"';
+  const valid = '```json\n' + JSON.stringify({ type: "tool_call", name: "shell", arguments: { command } }) + '\n```';
+  assert.deepEqual(parseToolCall(valid, tools), { name: "shell", arguments: { command } });
+  const invalid = '{"type":"tool_call","name":"shell","arguments":{"command":"' + command + '"}}';
+  assert.equal(parseToolCall(invalid, tools), null);
+  assert.equal(parseToolCall('```json\n' + invalid + '\n```', tools), null);
+  assert.equal(looksLikeToolCall('```json\n' + invalid + '\n```'), true);
 });
 
 test("accepts only a requested OpenCode tool", () => {

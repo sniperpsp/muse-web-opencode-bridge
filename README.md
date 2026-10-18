@@ -7,12 +7,30 @@ O Docker Engine, o serviço e o navegador ficam dentro da distro WSL. Não é ne
 ## Requisitos
 
 - Windows com WSL 2 e uma distro Ubuntu ou Debian;
-- Python 3.10+ e OpenCode instalados dentro dessa distro;
+- Python 3.10+ e OpenCode (os novos scripts de entrada instalam os requisitos ausentes);
 - acesso `sudo` para instalar pacotes do sistema quando o Docker Engine estiver ausente.
 
 ## Instalação
 
-Clone o projeto, abra o terminal WSL na pasta clonada e rode:
+No Windows, abra PowerShell na pasta clonada e execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\instalar.ps1
+```
+
+O menu permite escolher **OpenCode no Windows/PowerShell** ou **OpenCode no WSL**. Nos dois modos, Chromium e Docker Engine ficam dentro do WSL 2, sem Docker Desktop. No modo Windows o instalador registra o provedor na configuração do usuário Windows e instala Node.js pelo winget e OpenCode pelo npm quando ausentes. No modo WSL, registra o provedor na conta Linux e instala OpenCode pelo script oficial. Instalações existentes do OpenCode são mantidas.
+
+O script usa a distro `Ubuntu`; para uma distro existente com outro nome, use `-Distro Ubuntu-24.04` (consulte `wsl --list`). Se o WSL/distro estiver ausente, ele inicia a instalação e informa quando reiniciar e criar o usuário Linux. Depois execute o script novamente. Ele não cria uma senha Linux por você. No Windows, winget é fornecido pelo App Installer; se ausente, instale-o pela Microsoft Store.
+
+Também é possível baixar apenas `instalar.ps1` do repositório e executá-lo: nesse caso ele clona o projeto em `~/muse-web-opencode-bridge` na distro selecionada. Um checkout já existente é usado diretamente. Instalações por ZIP funcionam, mas a atualização automática requer um clone Git.
+
+No WSL, na pasta clonada, rode:
+
+```bash
+bash instalar.sh
+```
+
+Esse script instala Python, Git, curl e unzip ausentes em Ubuntu/Debian e chama o instalador. Se já tem os requisitos, pode continuar usando:
 
 ```bash
 python3 instalar-opencode.py
@@ -39,10 +57,55 @@ Depois, selecione `muse/muse-web` no OpenCode. O Chromium pode permanecer sem ja
 - `GET /v1/models` lista o modelo `muse-web`.
 - `POST /v1/chat/completions` recebe mensagens no formato Chat Completions, incluindo texto, imagens e áudio.
 - O serviço envia a mensagem pela interface web autenticada, espera a resposta e a devolve ao OpenCode.
-- Para operações locais, o Muse pode solicitar ferramentas que o OpenCode disponibiliza. O OpenCode executa essas ferramentas no WSL conforme as permissões configuradas no cliente; o container não monta nem edita os arquivos do computador diretamente.
+- Para operações locais, o Muse pode solicitar ferramentas que o OpenCode disponibiliza. O OpenCode executa essas ferramentas onde o cliente está rodando (Windows ou WSL), conforme suas permissões; o container não monta nem edita os arquivos do computador diretamente.
 - Cada sessão do OpenCode fica associada à sua própria conversa no Muse. A ponte usa uma aba e processa uma solicitação por vez.
 
 As respostas SSE (`stream: true`) só começam a chegar depois que o Muse termina, porque a interface web não fornece tokens intermediários à ponte. `attachments` é uma extensão da resposta OpenAI e pode exigir suporte do cliente para exibir mídia.
+
+Operações normais de ferramentas são solicitadas em JSON dentro de um bloco de código para preservar escapes, aspas e nomes como `__init__`. Uma operação com JSON inválido não é executada: a ponte pede uma correção uma vez e, se ela também falhar, informa o problema ao cliente. Esse erro de formato pode acontecer mesmo em respostas pequenas e não comprova excesso de tamanho.
+
+## Mensagens grandes e integração com Maestro
+
+O limite inicial da ponte é **60.000 caracteres no texto final enviado ao Muse**, somando mensagem, instruções, histórico necessário e catálogo de ferramentas. É uma proteção local configurável, não um limite oficial de tokens ou da conta Muse. A contagem usa unidades UTF-16 (um emoji pode contar como dois). Se o campo do site anunciar um `maxlength` menor, esse limite também é respeitado. O site pode aplicar outras restrições que não publica nesse campo.
+
+Validação em 18/10/2026, pela API da instalação em execução: três chamadas com 32.000, 64.000 e 128.000 caracteres de entrada produziram mensagens de 32.099, 64.099 e 128.099 caracteres na página, todas respondidas com `OK`. A caixa não declarou `maxlength`. Esses testes usaram texto sintético repetitivo, sem catálogo de ferramentas ou histórico extenso: comprovam esses envios, mas não determinam o teto do Muse nem garantem o mesmo resultado com outros conteúdos, contas ou conversas. O limite local de 60.000 permanece provisório; não foi deduzido desses testes.
+
+Antes de preencher a mensagem ou enviar anexos, a ponte rejeita excesso com HTTP `400`:
+
+```json
+{"error":{"type":"invalid_request_error","code":"context_length_exceeded","param":"messages","limit_chars":60000,"received_chars":72000,"retryable":false,"message":"...reduza a demanda, o histórico ou os resultados de ferramentas..."}}
+```
+
+O cliente Maestro/Maestri deve tratar esse erro e **reformular** a chamada: dividir a tarefa em etapas e reduzir resultados extensos de ferramentas. Repetir o mesmo payload não resolve. O texto digitado pelo usuário pode ser curto enquanto as instruções e ferramentas excedem o limite. A ponte não corta conteúdo nem inventa uma resposta do modelo. Um erro HTTP é recebido pelo cliente; o modelo só recebe essa orientação se o cliente a encaminhar.
+
+Se o próprio Muse exibir uma rejeição explícita de tamanho no envio, a ponte retorna `400` com `code: muse_prompt_too_large` e `suggested_max_prompt_chars` (metade do envio rejeitado, no máximo o limite local). Esse valor é uma sugestão, não uma cota descoberta. Nesse caso remove apenas o marcador pendente para permitir uma versão menor; o histórico permanece. Falhas ambíguas, cotas e timeouts continuam preservados como pendentes.
+
+`GET /v1/models` inclui uma extensão `limits` para clientes consultarem os limites antes de enviar. Continuam valendo até 500 mensagens no array, corpo total de 28 MiB (texto e anexos), mídia de resposta de até 6 MiB por item e 180 segundos por chamada. Corpo maior recebe `413` com `code: request_too_large` e `limit_bytes`, em vez de desconectar sem explicação.
+
+Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=60000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
+
+Erros de sessão usam `code: muse_authentication_required` (`401`); envios pendentes usam `submission_pending` (`409`); expiração de chamada usa `request_timeout`. Os logs incluem código e tamanhos quando disponíveis, sem registrar conteúdo das mensagens. Envios incertos continuam preservados para evitar duplicação.
+
+## Atualizar uma instalação
+
+O painel verifica a revisão instalada contra `main` no GitHub ao abrir e a cada hora, e tem o botão **Verificar atualização**. Rede indisponível, limite da API GitHub ou imagem sem revisão produzem estado desconhecido, não uma confirmação falsa de atualização. Uma imagem construída de código modificado localmente não é apresentada como uma revisão publicada.
+
+Pause as demandas no Maestro/OpenCode antes de atualizar. No WSL, dentro da pasta instalada:
+
+```bash
+python3 instalar-opencode.py --update
+```
+
+No PowerShell, na pasta com o launcher:
+
+```powershell
+.\instalar.ps1 -Atualizar
+# Para outra distro: .\instalar.ps1 -Atualizar -Distro Ubuntu-24.04
+```
+
+O atualizador verifica o `origin` oficial, branch `main`, ausência de alterações locais/arquivos não rastreados e histórico compatível. Então faz fetch e merge `--ff-only`, executa o instalador atualizado e reconstrói o container. Ele recusa chamadas ativas detectadas; mantenha os clientes pausados até terminar. Não faz reset, stash ou exclusão do volume, nem altera a configuração dos clientes Windows/WSL durante atualização.
+
+A imagem anterior fica marcada como `muse-opencode-bridge:rollback`. Se build/inicialização ou a checagem HTTP falhar, o instalador tenta restaurá-la; o checkout continua no código novo. O teste HTTP confirma o painel, não uma resposta real do Muse. Após atualizar, confira o login e faça uma solicitação pequena. O painel não executa comandos Git/Docker e não precisa acessar o socket do daemon.
 
 Exemplo de chamada direta:
 
@@ -78,6 +141,13 @@ docker compose down
 
 ```bash
 npm test
+```
+
+Para validar também o envio pelo Chromium com uma página de teste local, sem conta Muse, use a imagem construída do projeto:
+
+```bash
+docker build -t muse-opencode-bridge:test .
+docker run --rm --init --network none -e MUSE_BRIDGE_BROWSER_TEST=1 --entrypoint npm muse-opencode-bridge:test test
 ```
 
 Há também um teste de integração opcional que usa uma sessão autenticada real e envia mensagens ao Muse:

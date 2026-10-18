@@ -2,6 +2,7 @@
 """Inicia a ponte local do Muse e registra o provedor no OpenCode."""
 
 import json
+import argparse
 import os
 import platform
 import re
@@ -15,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -124,8 +125,8 @@ def provider_config(version_major, api_key):
     }
 
 
-def config_path():
-    directory = Path.home() / ".config" / "opencode"
+def config_path(directory=None):
+    directory = directory or Path.home() / ".config" / "opencode"
     jsonc = directory / "opencode.jsonc"
     json_file = directory / "opencode.json"
     existing = [path for path in (jsonc, json_file) if path.exists()]
@@ -199,6 +200,39 @@ def run(command, *, capture=False):
 def require_command(name):
     if shutil.which(name) is None:
         raise RuntimeError(f"Não encontrei '{name}'. Instale esse requisito e rode o script novamente.")
+
+
+def ensure_opencode():
+    os.environ["PATH"] = str(Path.home() / ".opencode" / "bin") + os.pathsep + os.environ.get("PATH", "")
+    if shutil.which("opencode"):
+        return
+    for name in ("curl", "unzip"):
+        require_command(name)
+    print("Instalando OpenCode pelo instalador oficial…")
+    with tempfile.TemporaryDirectory(prefix="muse-opencode-install-") as directory:
+        script = Path(directory) / "install.sh"
+        run_or_raise(["curl", "-fsSL", "https://opencode.ai/v2/install", "-o", str(script)], "Não consegui baixar o instalador do OpenCode.")
+        run_or_raise(["bash", str(script)], "A instalação do OpenCode falhou.")
+    require_command("opencode")
+
+
+def update_repository():
+    require_command("git")
+    def git(*args):
+        result = run(["git", *args], capture=True)
+        if result.returncode:
+            raise RuntimeError(f"Git não conseguiu executar {args[0]}. Revise o repositório e a conexão.")
+        return result.stdout.strip()
+    origin = git("remote", "get-url", "origin").removesuffix(".git").rstrip("/")
+    if origin not in {"https://github.com/sniperpsp/muse-web-opencode-bridge", "git@github.com:sniperpsp/muse-web-opencode-bridge"}:
+        raise RuntimeError("Atualização automática exige origin apontando para o repositório oficial.")
+    if git("branch", "--show-current") != "main" or git("status", "--porcelain"):
+        raise RuntimeError("Atualização exige branch main sem arquivos modificados ou não rastreados. Preserve suas alterações antes de continuar.")
+    git("fetch", "origin", "main:refs/remotes/origin/main")
+    git("merge-base", "--is-ancestor", "HEAD", "origin/main")
+    git("merge", "--ff-only", "origin/main")
+    # Re-enter the newly fetched installer; existing Windows/WSL client configs stay valid.
+    os.execv(sys.executable, [sys.executable, str(PROJECT_DIR / "instalar-opencode.py"), "--backend-only"])
 
 
 def is_wsl2():
@@ -352,6 +386,22 @@ def wait_for_dashboard():
     raise RuntimeError(f"O backend não respondeu em {DASHBOARD_URL} após 60 segundos.")
 
 
+def ensure_backend_idle():
+    try:
+        with urlopen(DASHBOARD_URL, timeout=3) as response:
+            html = response.read().decode("utf-8")
+    except (URLError, OSError):
+        return  # An offline backend can still be updated/repaired.
+    match = re.search(r'const token=("[a-f0-9]+");const config=', html)
+    if not match:
+        raise RuntimeError("Não consegui consultar o estado da instalação ativa. Pare as tarefas e o backend antes de atualizar.")
+    request = Request(DASHBOARD_URL + "/control/status", headers={"X-Control-Token": json.loads(match[1])})
+    with urlopen(request, timeout=15) as response:
+        status = json.load(response)
+    if status.get("request"):
+        raise RuntimeError("Há uma chamada em andamento. Pause o Maestro/OpenCode e aguarde a resposta antes de atualizar.")
+
+
 def read_api_key():
     result = run(["docker", "compose", "exec", "-T", SERVICE_NAME, "cat", "/data/api-key"], capture=True)
     if result.returncode != 0:
@@ -443,18 +493,62 @@ def self_test():
     ):
         assert ensure_docker() is False
 
+    for dirty, remote, branch, diverged in [(True, False, False, False), (False, True, False, False), (False, False, True, False), (False, False, False, True), (False, False, False, False)]:
+        calls = []
+        def fake_git(command, **kwargs):
+            calls.append(command)
+            output = ""
+            if command[1:3] == ["remote", "get-url"]:
+                output = "https://github.com/other/repo" if remote else "https://github.com/sniperpsp/muse-web-opencode-bridge.git"
+            elif command[1:3] == ["branch", "--show-current"]:
+                output = "feature" if branch else "main"
+            elif command[1:3] == ["status", "--porcelain"]:
+                output = " M README.md" if dirty else ""
+            return SimpleNamespace(returncode=int(diverged and command[1] == "merge-base"), stdout=output, stderr="")
+        with patch.object(module, "require_command"), patch.object(module, "run", side_effect=fake_git), patch.object(os, "execv") as reexec:
+            if dirty or remote or branch or diverged:
+                try:
+                    update_repository()
+                    raise AssertionError("Unsafe update was accepted")
+                except RuntimeError:
+                    pass
+                assert not any(c[1] == "merge" for c in calls)
+                reexec.assert_not_called()
+            else:
+                update_repository()
+                assert ["git", "merge", "--ff-only", "origin/main"] in calls
+                assert reexec.call_args.args[1][-1] == "--backend-only"
+
+    with patch.object(module, "ensure_backend_idle"), patch.object(module, "ensure_docker", return_value=True), patch.object(module, "ensure_docker_daemon"), patch.object(module, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(module, "run_or_raise") as commands, patch.object(module, "wait_for_dashboard", side_effect=RuntimeError("health failed")), patch.dict(os.environ):
+        try:
+            install(SimpleNamespace(backend_only=True, opencode_version=None))
+            raise AssertionError("Failed health check was accepted")
+        except RuntimeError as error:
+            assert str(error) == "health failed"
+        assert [call.args[0] for call in commands.call_args_list] == [
+            ["docker", "tag", "muse-opencode-bridge:local", "muse-opencode-bridge:rollback"],
+            ["docker", "compose", "up", "--build", "-d"],
+            ["docker", "tag", "muse-opencode-bridge:rollback", "muse-opencode-bridge:local"],
+            ["docker", "compose", "up", "--no-build", "-d"],
+        ]
+
     print("Autoteste do instalador: OK")
 
 
-def install():
+def install(args):
     if not sys.platform.startswith("linux"):
         raise RuntimeError("Este instalador foi preparado para Linux/WSL.")
-    require_command("opencode")
+    if args.backend_only:
+        ensure_backend_idle()
+    if not args.backend_only and not args.opencode_version:
+        ensure_opencode()
     if not ensure_docker():
         return False
 
-    version = run(["opencode", "--version"], capture=True)
-    version_text = (version.stdout or version.stderr).strip()
+    version = SimpleNamespace(returncode=0, stdout=args.opencode_version or "", stderr="")
+    if not args.backend_only and not args.opencode_version:
+        version = run(["opencode", "--version"], capture=True)
+    version_text = (version.stdout or version.stderr).strip() if not args.backend_only else "2.0"
     match = re.search(r"\bv?(\d+)\.", version_text)
     if version.returncode != 0 or not match or int(match.group(1)) not in (1, 2):
         raise RuntimeError(f"Não consegui identificar uma versão compatível do OpenCode: {version_text}")
@@ -468,12 +562,28 @@ def install():
             raise RuntimeError("Não consegui criar o volume persistente do Chromium e da chave local.")
 
     print("Iniciando o backend Muse no Docker…")
-    if run(["docker", "compose", "up", "--build", "-d"]).returncode != 0:
-        raise RuntimeError("Docker Compose não conseguiu iniciar o backend.")
-    wait_for_dashboard()
+    revision = run(["git", "rev-parse", "HEAD"], capture=True) if shutil.which("git") else None
+    clean = run(["git", "status", "--porcelain"], capture=True) if revision and revision.returncode == 0 else None
+    os.environ["MUSE_BUILD_REVISION"] = revision.stdout.strip() if clean and clean.returncode == 0 and not clean.stdout.strip() else "unknown"
+    rollback = args.backend_only and run(["docker", "image", "inspect", "muse-opencode-bridge:local"], capture=True).returncode == 0
+    if rollback:
+        run_or_raise(["docker", "tag", "muse-opencode-bridge:local", "muse-opencode-bridge:rollback"], "Não consegui preservar a imagem anterior.")
+    try:
+        run_or_raise(["docker", "compose", "up", "--build", "-d"], "Docker Compose não conseguiu iniciar o backend.")
+        wait_for_dashboard()
+    except RuntimeError:
+        if rollback:
+            run_or_raise(["docker", "tag", "muse-opencode-bridge:rollback", "muse-opencode-bridge:local"], "Falha ao restaurar a imagem anterior.")
+            run_or_raise(["docker", "compose", "up", "--no-build", "-d"], "Falha ao reiniciar a imagem anterior.")
+            print("Imagem anterior restaurada. O checkout contém o código novo; corrija a falha antes de tentar novamente.")
+        raise
+
+    if args.backend_only:
+        print("Backend atualizado. Login, conversas e configurações dos clientes foram preservados.")
+        return True
 
     key_name, entry = provider_config(major, read_api_key())
-    target = config_path()
+    target = config_path(Path(args.config_dir) if args.config_dir else None)
     changed = update_config(target, key_name, entry)
     print("Backend respondendo em http://127.0.0.1:4317.")
     print(f"OpenCode {'configurado' if changed else 'já estava configurado'} em {target}.")
@@ -487,15 +597,23 @@ def install():
 
 
 def main():
-    if sys.argv[1:] == ["--self-test"]:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--update", action="store_true", help="Atualiza origin/main e recria o backend preservando o volume")
+    parser.add_argument("--backend-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--config-dir", help="Diretório de configuração do cliente Windows, passado pelo PowerShell")
+    parser.add_argument("--opencode-version", help="Versão do cliente Windows, passada pelo PowerShell")
+    args = parser.parse_args()
+    if bool(args.config_dir) != bool(args.opencode_version):
+        parser.error("--config-dir e --opencode-version devem ser usados juntos")
+    if args.self_test:
         self_test()
         return 0
-    if sys.argv[1:]:
-        print(f"Uso: {Path(sys.argv[0]).name} [--self-test]", file=sys.stderr)
-        return 2
     try:
-        if not install():
-            return 0
+        if args.update:
+            update_repository()
+        if not install(args):
+            return 3  # New Docker group: caller must report re-login, never success.
     except (JsoncError, OSError, RuntimeError) as error:
         print(f"Instalação não concluída: {error}", file=sys.stderr)
         return 1
