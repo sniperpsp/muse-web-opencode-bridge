@@ -491,10 +491,13 @@ async function readChatMessages() {
   return musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups, selector) => groups.map((group) => {
     const role = group.getAttribute("data-message-role");
     const assistant = group.matches(selector) ? group : group.querySelector(selector);
+    const text = assistant?.innerText || "";
+    const jsonCode = assistant?.querySelector('pre.language-json code')?.innerText;
+    const standaloneJson = jsonCode !== undefined && [jsonCode.trim(), `json\n${jsonCode.trim()}`].includes(text.trim());
     return {
       id: group.getAttribute("data-message-id"), role,
       error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
-      text: role === "assistant" ? assistant?.innerText || "" : group.querySelector("p")?.textContent || "",
+      text: role === "assistant" ? standaloneJson ? jsonCode : text : group.querySelector("p")?.textContent || "",
       busy: role === "assistant" && (!assistant || assistant.closest('[aria-busy]')?.getAttribute("aria-busy") === "true"),
     };
   }), selector);

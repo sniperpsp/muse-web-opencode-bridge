@@ -40,7 +40,12 @@ test("browser API rejects large prompts, accepts reformulation and preserves amb
           alert.textContent=prompt.length>500?'Message is too long':'Message failed to send';user.append(alert);
         }else{
           const reply=document.createElement('div');reply.dataset.messageId='reply-'+count;reply.dataset.messageRole='assistant';
-          const body=document.createElement('div');body.setAttribute('data-hatch-assistant-message-body','');body.textContent='FIXTURE_OK';reply.append(body);document.querySelector('main').append(reply);
+          const body=document.createElement('div');body.setAttribute('data-hatch-assistant-message-body','');
+          if(prompt.includes('JSON_BLOCK')){
+            body.append('json');const pre=document.createElement('pre');pre.className='language-json';
+            const code=document.createElement('code');code.textContent=JSON.stringify({type:'final',text:'FIXTURE_JSON'});pre.append(code);body.append(pre);
+          }else{body.textContent='FIXTURE_OK';}
+          reply.append(body);document.querySelector('main').append(reply);
         }
         document.querySelector('textarea').value='';
       }
@@ -88,6 +93,9 @@ test("browser API rejects large prompts, accepts reformulation and preserves amb
     result = await send("Responda OK");
     assert.equal(result.status, 200);
     assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    result = await send("JSON_BLOCK");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_JSON");
     result = await send("AMBIGUOUS", "uncertain");
     assert.equal(result.status, 409);
     state = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
