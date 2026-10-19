@@ -6,6 +6,7 @@ services:
         MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
     environment:
       MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-60000}
+      MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-180000}
     image: muse-opencode-bridge:local
     container_name: muse-opencode-bridge
     init: true

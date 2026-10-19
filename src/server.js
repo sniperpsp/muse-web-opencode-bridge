@@ -34,6 +34,8 @@ const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the Muse account's quota.
 const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
+const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
+if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
 
 let apiKey;
 let browser;
@@ -539,7 +541,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
   const started = Date.now();
   let lastText = "";
   let changedAt = 0;
-  while (Date.now() - started < 180000) {
+  while (Date.now() - started < REQUEST_TIMEOUT_MS) {
     signal.throwIfAborted();
     await sleep(500);
     await rememberThread();
@@ -577,7 +579,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
       changedAt = 0;
     }
   }
-  throw Object.assign(new Error("A resposta do Muse não foi confirmada em 3 minutos. O envio foi preservado; repetir a mesma chamada retoma a leitura sem reenviar a mensagem."), { status: 409 });
+  throw Object.assign(new Error("A resposta do Muse não foi confirmada no prazo de leitura. O envio foi preservado; repetir a mesma chamada retoma a leitura sem reenviar a mensagem."), { status: 503, code: "request_timeout", retryable: true });
 }
 
 async function readMediaSources() {
@@ -826,9 +828,11 @@ async function handleCompletion(req, res) {
     if (!res.writableEnded) disconnected.abort(new Error("O cliente encerrou a solicitação."));
   });
   let signal = disconnected.signal;
+  let executionDeadline;
   try {
     const completion = await queue.run(async (queueWaitMs) => {
-      signal = AbortSignal.any([disconnected.signal, AbortSignal.timeout(180000)]);
+      executionDeadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      signal = AbortSignal.any([disconnected.signal, executionDeadline]);
       signal.throwIfAborted();
       activeRequestHash = requestHash;
       activeSessionId = sessionId;
@@ -880,6 +884,12 @@ async function handleCompletion(req, res) {
       try { await saveSessionState(await context.storageState({ indexedDB: true })); }
       catch (error) { console.warn(`Não consegui atualizar o arquivo local da sessão do Muse: ${error.message}`); }
       return result;
+      } catch (error) {
+        if ((executionDeadline.aborted || error.code === "request_timeout" || error.name === "TimeoutError") && conversation.pendingSubmission?.requestHash === requestHash) {
+          conversation.pendingSubmission.recoveryTimeouts = (conversation.pendingSubmission.recoveryTimeouts || 0) + 1;
+          await saveConversations();
+        }
+        throw error;
       } finally {
         activeRequestHash = "";
         activeSessionId = "";
@@ -890,15 +900,20 @@ async function handleCompletion(req, res) {
   } catch (error) {
     if (res.destroyed) return;
     const pageTimeout = error.name === "TimeoutError";
-    const status = signal.aborted ? 409 : error.status || (conversations.get(sessionId)?.pendingSubmission?.requestHash === requestHash ? 409 : pageTimeout ? 503 : 502);
-    const message = signal.aborted
-      ? "A chamada atingiu o limite de 3 minutos. Se houve envio ao Muse, ele foi preservado: uma nova tentativa da mesma chamada retoma a leitura, sem reenviar."
+    const pending = conversations.get(sessionId)?.pendingSubmission;
+    const timedOut = executionDeadline?.aborted || error.code === "request_timeout";
+    const reviewRequired = (timedOut || pageTimeout) && (pending?.recoveryTimeouts || 0) >= 3;
+    const status = reviewRequired ? 409 : timedOut ? 503 : error.status || (pageTimeout ? 503 : pending?.requestHash === requestHash ? 409 : 502);
+    const message = reviewRequired
+      ? "O mesmo envio ao Muse já atingiu três timeouts de leitura. A recuperação automática foi interrompida para evitar um ciclo infinito. Confira a conversa no painel; o envio continua preservado e não foi repetido. Uma tentativa manual da solicitação original ainda pode recuperar a resposta."
+      : timedOut
+      ? `A chamada atingiu ${REQUEST_TIMEOUT_MS / 1000} segundos de execução. Repita a mesma solicitação para retomar a leitura da resposta; se houve envio ao Muse, ele foi preservado e não será reenviado.`
       : pageTimeout ? "A página do Muse demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
       : error.message || "Falha ao conversar com o Muse.";
-    const code = signal.aborted ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
+    const code = reviewRequired ? "submission_review_required" : timedOut ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
     console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
     if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
-    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: error.retryable ?? (signal.aborted || pageTimeout ? true : undefined) } });
+    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: reviewRequired ? false : error.retryable ?? (timedOut || pageTimeout ? true : undefined) } });
   }
 }
 
@@ -969,7 +984,7 @@ async function handleControl(req, res, url) {
       request: activeRequestHash ? activeRequestHash.slice(0, 12) : null,
       queue: queue.status(),
       session: activeSessionId || null,
-      pending: conversation.pendingSubmission ? { phase: conversation.pendingSubmission.phase, elapsedMs: Date.now() - conversation.pendingSubmission.startedAt } : null,
+      pending: conversation.pendingSubmission ? { phase: conversation.pendingSubmission.phase, elapsedMs: Date.now() - conversation.pendingSubmission.startedAt, recovery_timeouts: conversation.pendingSubmission.recoveryTimeouts || 0 } : null,
     });
   }
   if (url.pathname === "/control/open-auth" && req.method === "POST") {
@@ -1052,7 +1067,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
-    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: 180, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
+    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: REQUEST_TIMEOUT_MS / 1000, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return handleCompletion(req, res);
   sendJson(res, 404, { error: { message: "Rota não encontrada.", type: "not_found_error" } });

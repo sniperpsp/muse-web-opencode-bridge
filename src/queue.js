@@ -20,7 +20,7 @@ export function createRequestQueue({ maxWaiting = 8, waitTimeoutMs = 180000 } = 
     run(task, { sessionId, signal } = {}) {
       if (signal?.aborted) return Promise.reject(signal.reason);
       if (sessionId && (active?.sessionId === sessionId || waiting.some((entry) => entry.sessionId === sessionId))) {
-        return Promise.reject(error("Esta sessão já tem uma chamada na fila ou em execução. Aguarde a resposta antes de enviar outra; a nova chamada não foi enviada ao Muse.", 409, "session_busy"));
+        return Promise.reject(error("Esta sessão já tem uma chamada na fila ou em execução. Aguarde a resposta antes de enviar outra; a nova chamada não foi enviada ao Muse.", 503, "session_busy"));
       }
       if (active && waiting.length >= maxWaiting) return Promise.reject(error("A fila da ponte está cheia. Aguarde e repita a mesma solicitação; ela não foi enviada ao Muse.", 429, "queue_full"));
       return new Promise((resolve, reject) => {

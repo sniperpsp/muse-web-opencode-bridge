@@ -68,11 +68,19 @@ Operações normais de ferramentas são solicitadas em JSON dentro de um bloco d
 
 A ponte tem um processo e uma aba do Chromium. A fila local atende em ordem de chegada, com uma chamada em execução e até oito aguardando. Cada execução tem até 180 segundos **a partir da saída da fila**; o tempo de espera tem seu próprio teto de 180 segundos. O cliente pode ter um timeout menor, independentemente desses valores.
 
-Pedidos desconectados saem da espera sem serem enviados ao Muse. A fila cheia retorna `429 queue_full`; espera expirada retorna `503 queue_timeout`. Uma segunda chamada da mesma sessão enquanto a primeira aguarda ou executa recebe `409 session_busy`. O painel e `/control/status` mostram quantas chamadas aguardam; os logs registram `queueWaitMs` no início da execução.
+Pedidos desconectados saem da espera sem serem enviados ao Muse. A fila cheia retorna `429 queue_full`; espera expirada retorna `503 queue_timeout`. Uma segunda chamada da mesma sessão enquanto a primeira aguarda ou executa recebe `503 session_busy`, permitindo que o cliente tente novamente após a primeira terminar. O painel e `/control/status` mostram quantas chamadas aguardam; os logs registram `queueWaitMs` no início da execução.
 
 Uma sessão com envio persistido ainda não confirmado recebe `409 submission_pending` para pedidos diferentes, antes de carregar a página. Para recuperar a resposta, repita a solicitação original. A ponte não apaga um pendente apenas pela idade: um timeout não comprova que o envio falhou. A leitura da resposta consulta somente mensagens cujos IDs não existiam antes do envio, evitando extrair novamente o texto do histórico antigo.
 
 A fila HTTP fica em memória; reiniciar desconecta os pedidos aguardando e os clientes precisam tentar novamente. Os envios já iniciados continuam registrados no volume para recuperação, sem reenvio automático. Redis não é necessário para o único processo atual; um broker faria sentido ao separar a API de workers ou compartilhar a fila entre processos. Ele não aumenta a capacidade da aba nem resolve a renderização de conversas grandes.
+
+### Recuperação após timeout
+
+Timeouts de execução e de navegação retornam `503`, `retryable: true` e `Retry-After: 2`, para permitir uma nova tentativa do cliente. Repita a mesma requisição com o mesmo ID de sessão: se já houve envio, a ponte retoma a leitura da conversa, sem preencher ou clicar em enviar novamente. Se a resposta já tiver sido concluída, retorna a resposta armazenada. Uma conexão encerrada não pode receber uma resposta depois; a entrega exige que o cliente volte a consultar a API. O número de retries automáticos também depende do cliente.
+
+O contador de timeouts de recuperação fica salvo junto do envio no volume. Após três timeouts do mesmo envio, a ponte retorna `409 submission_review_required` com `retryable: false`, pedindo conferência da conversa em vez de retry automático indefinido. Não apaga o pendente nem reenvia a mensagem. Uma tentativa manual da solicitação original continua podendo recuperar uma resposta que apareça depois. Pedidos diferentes permanecem bloqueados por `submission_pending` para não entregar uma operação antiga como resposta de outra tarefa.
+
+O tempo de execução padrão é 180 segundos. Para alterá-lo, configure `.env` com `MUSE_REQUEST_TIMEOUT_MS` (de 1000 a 600000 milissegundos) e recrie a ponte durante uma pausa. Isso não altera o timeout do OpenCode; ao aumentar o prazo, ajuste o cliente para comportar espera na fila e execução. No OpenCode V2, consulte os [timeouts do provedor](https://dev.opencode.ai/v2/docs/providers/#timeouts).
 
 ## Mensagens grandes e integração com Maestro
 

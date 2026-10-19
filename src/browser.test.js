@@ -16,7 +16,7 @@ async function until(probe) {
   throw new Error("Fixture startup timed out");
 }
 
-test("browser API distinguishes loading from login, rejects large prompts and preserves ambiguous sends", { skip: process.env.MUSE_BRIDGE_BROWSER_TEST !== "1", timeout: 90000 }, async () => {
+test("browser API distinguishes loading from login and resumes delayed responses without resending", { skip: process.env.MUSE_BRIDGE_BROWSER_TEST !== "1", timeout: 130000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "muse-browser-test-"));
   const children = [];
   function child(command, args, options = {}) {
@@ -42,7 +42,8 @@ test("browser API distinguishes loading from login, rejects large prompts and pr
         if(prompt.length>500 || prompt.includes('AMBIGUOUS')){
           const alert=document.createElement('span');alert.setAttribute('role','alert');
           alert.textContent=prompt.length>500?'Message is too long':'Message failed to send';user.append(alert);
-        }else{
+        }else if(!prompt.includes('NEVER_REPLY')){
+          function finish(){
           const reply=document.createElement('div');reply.dataset.messageId='reply-'+count;reply.dataset.messageRole='assistant';
           const body=document.createElement('div');body.setAttribute('data-hatch-assistant-message-body','');
           if(prompt.includes('JSON_BLOCK')){
@@ -50,6 +51,8 @@ test("browser API distinguishes loading from login, rejects large prompts and pr
             const code=document.createElement('code');code.textContent=JSON.stringify({type:'final',text:'FIXTURE_JSON'});pre.append(code);body.append(pre);
           }else{body.textContent='FIXTURE_OK';}
           reply.append(body);document.querySelector('main').append(reply);
+          }
+          if(prompt.includes('SLOW_REPLY'))setTimeout(finish,6500);else finish();
         }
         document.querySelector('textarea').value='';
       }
@@ -70,9 +73,10 @@ test("browser API distinguishes loading from login, rejects large prompts and pr
     await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
     const port = reservation.address().port;
     await new Promise((resolve) => reservation.close(resolve));
-    child(process.execPath, [fileURLToPath(new URL("./server.js", import.meta.url))], {
-      env: { ...process.env, MUSE_URL: origin, MUSE_NEW_CHAT_URL: origin + "/thread/new", MUSE_BRIDGE_HOST: "127.0.0.1", MUSE_BRIDGE_PORT: String(port), MUSE_BRIDGE_DATA: directory, MUSE_CDP_ENDPOINT: cdp, MUSE_AUTH_BROWSER: "0", MUSE_MAX_PROMPT_CHARS: "1000" },
+    const startServer = (timeout = 180000) => child(process.execPath, [fileURLToPath(new URL("./server.js", import.meta.url))], {
+      env: { ...process.env, MUSE_URL: origin, MUSE_NEW_CHAT_URL: origin + "/thread/new", MUSE_BRIDGE_HOST: "127.0.0.1", MUSE_BRIDGE_PORT: String(port), MUSE_BRIDGE_DATA: directory, MUSE_CDP_ENDPOINT: cdp, MUSE_AUTH_BROWSER: "0", MUSE_MAX_PROMPT_CHARS: "1000", MUSE_REQUEST_TIMEOUT_MS: String(timeout) },
     });
+    let serverProcess = startServer();
     const base = `http://127.0.0.1:${port}`;
     const html = await until(async () => (await fetch(base)).text());
     const token = JSON.parse(html.match(/const token=("[a-f0-9]+");const config=/)[1]);
@@ -83,7 +87,12 @@ test("browser API distinguishes loading from login, rejects large prompts and pr
         method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Muse-Session-Id": session },
         body: JSON.stringify({ messages: [{ role: "user", content: text }] }), signal: AbortSignal.timeout(25000),
       });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await response.json(), retryAfter: response.headers.get("retry-after") };
+    };
+    const waitReady = async () => {
+      const html = await until(async () => (await fetch(base)).text());
+      const token = JSON.parse(html.match(/const token=("[a-f0-9]+");const config=/)[1]);
+      await until(async () => (await (await fetch(base + "/control/status", { headers: { "X-Control-Token": token } })).json()).authenticated);
     };
     await page.evaluate(() => { document.querySelector('textarea').style.display = 'none'; setTimeout(() => { document.querySelector('textarea').style.display = ''; }, 6000); });
     let result = await send("Espere a página ficar pronta", "delayed");
@@ -142,6 +151,39 @@ test("browser API distinguishes loading from login, rejects large prompts and pr
     const completed = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
     for (const id of ["one", "two", "three", "four"]) assert.equal(completed["parallel-" + id].pendingSubmission, undefined);
     assert.equal(new Set(["one", "two", "three", "four"].map((id) => completed["parallel-" + id].url)).size, 4);
+    serverProcess.kill("SIGTERM");
+    await children.at(-1).exited;
+    serverProcess = startServer(5000);
+    await waitReady();
+    result = await send("SLOW_REPLY", "slow");
+    assert.equal(result.status, 503);
+    assert.equal(result.body.error.code, "request_timeout");
+    assert.equal(result.body.error.retryable, true);
+    assert.equal(result.retryAfter, "2");
+    state = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
+    assert.equal(state.slow.pendingSubmission.recoveryTimeouts, 1);
+    assert.equal(await page.locator('[data-message-role="user"]').count(), 1);
+    result = await send("SLOW_REPLY", "slow");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    assert.equal(await page.locator('[data-message-role="user"]').count(), 1, "resume reads the answer without clicking Send again");
+    const cachedId = result.body.id;
+    assert.equal((await send("SLOW_REPLY", "slow")).body.id, cachedId);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      result = await send("NEVER_REPLY", "stalled");
+      assert.equal(result.status, attempt < 3 ? 503 : 409);
+      assert.equal(result.body.error.code, attempt < 3 ? "request_timeout" : "submission_review_required");
+      assert.equal(result.body.error.retryable, attempt < 3);
+      assert.equal(await page.locator('[data-message-role="user"]').count(), 1);
+      if (attempt === 1) {
+        serverProcess.kill("SIGTERM");
+        await children.at(-1).exited;
+        serverProcess = startServer(5000);
+        await waitReady();
+      }
+    }
+    state = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
+    assert.equal(state.stalled.pendingSubmission.recoveryTimeouts, 3, "recovery budget survives restart");
   } finally {
     // Stop the bridge before its browser to avoid reconnection during cleanup.
     for (const item of children.reverse()) { item.process.kill("SIGTERM"); await item.exited; }
