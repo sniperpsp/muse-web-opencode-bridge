@@ -16,7 +16,7 @@ async function until(probe) {
   throw new Error("Fixture startup timed out");
 }
 
-test("browser API rejects large prompts, accepts reformulation and preserves ambiguous sends", { skip: process.env.MUSE_BRIDGE_BROWSER_TEST !== "1", timeout: 45000 }, async () => {
+test("browser API distinguishes loading from login, rejects large prompts and preserves ambiguous sends", { skip: process.env.MUSE_BRIDGE_BROWSER_TEST !== "1", timeout: 90000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "muse-browser-test-"));
   const children = [];
   function child(command, args, options = {}) {
@@ -28,9 +28,13 @@ test("browser API rejects large prompts, accepts reformulation and preserves amb
     res.setHeader("Content-Type", "text/html");
     res.end(`<textarea placeholder="Message"></textarea><button onclick="send()">Send</button><main></main><script>
       let count=0;
+      const old=document.createElement('div');old.dataset.messageId='old';old.dataset.messageRole='assistant';
+      const oldBody=document.createElement('div');oldBody.setAttribute('data-hatch-assistant-message-body','');oldBody.textContent='Histórico antigo';
+      Object.defineProperty(oldBody,'innerText',{get(){throw new Error('Old history must not be read');}});
+      old.append(oldBody);document.querySelector('main').append(old);
       function send(){
         const prompt=document.querySelector('textarea').value;
-        history.replaceState({},'', '/thread/fixture');
+        if(!location.pathname.startsWith('/thread/') || location.pathname==='/thread/new') history.replaceState({},'', '/thread/fixture-'+Date.now());
         const user=document.createElement('div');
         user.dataset.messageId='user-'+(++count);user.dataset.messageRole='user';
         const p=document.createElement('p');p.textContent=prompt;user.append(p);
@@ -77,11 +81,33 @@ test("browser API rejects large prompts, accepts reformulation and preserves amb
     const send = async (text, session = "fixture") => {
       const response = await fetch(base + "/v1/chat/completions", {
         method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Muse-Session-Id": session },
-        body: JSON.stringify({ messages: [{ role: "user", content: text }] }), signal: AbortSignal.timeout(12000),
+        body: JSON.stringify({ messages: [{ role: "user", content: text }] }), signal: AbortSignal.timeout(25000),
       });
       return { status: response.status, body: await response.json() };
     };
-    let result = await send("x".repeat(2000));
+    await page.evaluate(() => { document.querySelector('textarea').style.display = 'none'; setTimeout(() => { document.querySelector('textarea').style.display = ''; }, 6000); });
+    let result = await send("Espere a página ficar pronta", "delayed");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    await page.evaluate(() => { document.querySelector('textarea').style.display = 'none'; });
+    const beforeUnavailable = await page.locator('[data-message-role="user"]').count();
+    result = await send("Não envie enquanto a página estiver indisponível", "unavailable");
+    assert.equal(result.status, 503);
+    assert.equal(result.body.error.code, "muse_page_not_ready");
+    assert.equal(result.body.error.retryable, true);
+    assert.equal(await page.locator('[data-message-role="user"]').count(), beforeUnavailable);
+    const status = await (await fetch(base + "/control/status", { headers: { "X-Control-Token": token } })).json();
+    assert.match(status.state, /perda de login não confirmada/);
+    await page.evaluate(() => { const form = document.createElement('form'); form.id = 'login'; form.innerHTML = '<p>Log in or create an account</p><input type="email">'; document.body.append(form); });
+    result = await send("Login realmente necessário", "login");
+    assert.equal(result.status, 401);
+    assert.equal(result.body.error.code, "muse_authentication_required");
+    assert.equal(result.body.error.retryable, false);
+    await page.evaluate(() => { document.querySelector('#login').remove(); document.querySelector('textarea').style.display = ''; });
+    result = await send("Não envie enquanto a página estiver indisponível", "unavailable");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    result = await send("x".repeat(2000));
     assert.equal(result.status, 400);
     assert.equal(result.body.error.code, "context_length_exceeded");
     assert.equal(await page.locator('[data-message-role="user"]').count(), 0);
@@ -96,11 +122,26 @@ test("browser API rejects large prompts, accepts reformulation and preserves amb
     result = await send("JSON_BLOCK");
     assert.equal(result.status, 200);
     assert.equal(result.body.choices[0].message.content, "FIXTURE_JSON");
+    await page.getByRole("button", { name: "Send" }).evaluate((button) => button.remove());
+    result = await send("Sem botão de envio");
+    assert.equal(result.status, 502);
+    state = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
+    assert.equal(state.fixture.pendingSubmission, undefined);
     result = await send("AMBIGUOUS", "uncertain");
     assert.equal(result.status, 409);
     state = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
     assert.ok(state.uncertain.pendingSubmission);
     assert.equal((await send("another message", "uncertain")).status, 409);
+    const simultaneous = await Promise.all(["one", "two", "three", "four"].map((id) => send("Pedido " + id, "parallel-" + id)));
+    for (const result of simultaneous) {
+      assert.equal(result.status, 200);
+      assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    }
+    const queueStatus = await (await fetch(base + "/control/status", { headers: { "X-Control-Token": token } })).json();
+    assert.equal(queueStatus.queue.waiting, 0);
+    const completed = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
+    for (const id of ["one", "two", "three", "four"]) assert.equal(completed["parallel-" + id].pendingSubmission, undefined);
+    assert.equal(new Set(["one", "two", "three", "four"].map((id) => completed["parallel-" + id].url)).size, 4);
   } finally {
     // Stop the bridge before its browser to avoid reconnection during cleanup.
     for (const item of children.reverse()) { item.process.kill("SIGTERM"); await item.exited; }

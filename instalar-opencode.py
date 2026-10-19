@@ -398,7 +398,7 @@ def ensure_backend_idle():
     request = Request(DASHBOARD_URL + "/control/status", headers={"X-Control-Token": json.loads(match[1])})
     with urlopen(request, timeout=15) as response:
         status = json.load(response)
-    if status.get("request"):
+    if status.get("request") or status.get("queue", {}).get("waiting"):
         raise RuntimeError("Há uma chamada em andamento. Pause o Maestro/OpenCode e aguarde a resposta antes de atualizar.")
 
 

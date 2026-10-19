@@ -64,6 +64,16 @@ As respostas SSE (`stream: true`) só começam a chegar depois que o Muse termin
 
 Operações normais de ferramentas são solicitadas em JSON dentro de um bloco de código para preservar escapes, aspas e nomes como `__init__`. Uma operação com JSON inválido não é executada: a ponte pede uma correção uma vez e, se ela também falhar, informa o problema ao cliente. Esse erro de formato pode acontecer mesmo em respostas pequenas e não comprova excesso de tamanho.
 
+## Fila e várias sessões
+
+A ponte tem um processo e uma aba do Chromium. A fila local atende em ordem de chegada, com uma chamada em execução e até oito aguardando. Cada execução tem até 180 segundos **a partir da saída da fila**; o tempo de espera tem seu próprio teto de 180 segundos. O cliente pode ter um timeout menor, independentemente desses valores.
+
+Pedidos desconectados saem da espera sem serem enviados ao Muse. A fila cheia retorna `429 queue_full`; espera expirada retorna `503 queue_timeout`. Uma segunda chamada da mesma sessão enquanto a primeira aguarda ou executa recebe `409 session_busy`. O painel e `/control/status` mostram quantas chamadas aguardam; os logs registram `queueWaitMs` no início da execução.
+
+Uma sessão com envio persistido ainda não confirmado recebe `409 submission_pending` para pedidos diferentes, antes de carregar a página. Para recuperar a resposta, repita a solicitação original. A ponte não apaga um pendente apenas pela idade: um timeout não comprova que o envio falhou. A leitura da resposta consulta somente mensagens cujos IDs não existiam antes do envio, evitando extrair novamente o texto do histórico antigo.
+
+A fila HTTP fica em memória; reiniciar desconecta os pedidos aguardando e os clientes precisam tentar novamente. Os envios já iniciados continuam registrados no volume para recuperação, sem reenvio automático. Redis não é necessário para o único processo atual; um broker faria sentido ao separar a API de workers ou compartilhar a fila entre processos. Ele não aumenta a capacidade da aba nem resolve a renderização de conversas grandes.
+
 ## Mensagens grandes e integração com Maestro
 
 O limite inicial da ponte é **60.000 caracteres no texto final enviado ao Muse**, somando mensagem, instruções, histórico necessário e catálogo de ferramentas. É uma proteção local configurável, não um limite oficial de tokens ou da conta Muse. A contagem usa unidades UTF-16 (um emoji pode contar como dois). Se o campo do site anunciar um `maxlength` menor, esse limite também é respeitado. O site pode aplicar outras restrições que não publica nesse campo.
@@ -84,7 +94,9 @@ Se o próprio Muse exibir uma rejeição explícita de tamanho no envio, a ponte
 
 Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=60000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
 
-Erros de sessão usam `code: muse_authentication_required` (`401`); envios pendentes usam `submission_pending` (`409`); expiração de chamada usa `request_timeout`. Os logs incluem código e tamanhos quando disponíveis, sem registrar conteúdo das mensagens. Envios incertos continuam preservados para evitar duplicação.
+Uma tela de login identificada por campos e texto de autenticação usa `code: muse_authentication_required` (`401`). A ausência temporária da caixa de mensagem recebe uma segunda verificação e, se persistir sem evidência de login, retorna `503` com `muse_page_not_ready` e `retryable: true`. Timeouts do navegador usam `muse_page_timeout`; expiração da chamada usa `request_timeout`. Esses casos não são apresentados como perda de login. O cliente deve repetir a mesma solicitação para retomar um envio pendente sem duplicá-lo.
+
+Envios pendentes usam `submission_pending` (`409`). Os logs incluem código e tamanhos quando disponíveis, sem registrar conteúdo das mensagens. Envios incertos continuam preservados para evitar duplicação.
 
 ## Atualizar uma instalação
 

@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
 import { checkPromptLength, isPromptSizeError } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
+import { createRequestQueue } from "./queue.js";
 
 const API_HOST = process.env.MUSE_BRIDGE_HOST || "127.0.0.1";
 const API_PORT = Number(process.env.MUSE_BRIDGE_PORT || 4317);
@@ -49,7 +50,7 @@ let conversations = new Map();
 let conversation = {};
 let activeSessionId = "";
 let activeRequestHash = "";
-let queue = Promise.resolve();
+const queue = createRequestQueue();
 const controlToken = randomBytes(32).toString("hex");
 
 for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CDP_PORT], ["MUSE_AUTH_CDP_PORT", AUTH_CDP_PORT]]) {
@@ -343,10 +344,10 @@ async function openMuseBrowser() {
   if (museAuthenticated) {
     browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
     browserError = "";
-  } else if (MANAGED_AUTH_BROWSER) {
-    browserState = "Chromium do Docker aberto; conclua o login";
   } else {
-    browserState = "Muse aberto; conclua o login";
+    browserState = (await museReadinessError()).status === 401
+      ? "Muse exibiu uma tela de autenticação; conclua o login"
+      : "Página do Muse carregando ou temporariamente indisponível";
   }
 }
 
@@ -378,7 +379,34 @@ async function findComposer() {
   try { await preferred.waitFor({ state: "visible", timeout: 10000 }); return preferred; } catch {}
   const generic = musePage.locator('textarea, [contenteditable="true"], [role="textbox"]').last();
   try { await generic.waitFor({ state: "visible", timeout: 5000 }); return generic; } catch {}
-  throw new Error("Não encontrei a caixa de mensagem. Abra o Muse no painel e conclua o login; se o seletor da página mudou, configure MUSE_COMPOSER_SELECTOR.");
+  throw await museReadinessError();
+}
+
+async function museReadinessError() {
+  const login = await musePage?.evaluate(() => {
+    const fields = document.querySelectorAll('input[type="email"], input[type="password"], input[autocomplete="username"], input[autocomplete="one-time-code"], input[placeholder*="email" i], input[placeholder*="e-mail" i]');
+    const visible = [...fields].some((field) => field.getBoundingClientRect().width && field.getBoundingClientRect().height);
+    return visible && /log in|sign in|log into|entrar|iniciar sess[aã]o|c[oó]digo de (?:login|verifica)|verification code|login code/i.test(document.body.innerText);
+  }).catch(() => false);
+  return Object.assign(new Error(login
+    ? `O Muse exibiu uma tela de autenticação. Conclua o login no painel local: http://127.0.0.1:${API_PORT}/`
+    : "A página do Muse ainda não ficou pronta ou a caixa de mensagem está indisponível. Isso não confirma perda do login. Aguarde alguns segundos e repita a mesma solicitação; envios pendentes são preservados. Confira o painel se persistir."), {
+    status: login ? 401 : 503, code: login ? "muse_authentication_required" : "muse_page_not_ready", retryable: !login,
+  });
+}
+
+async function requireMuseReady(signal) {
+  signal.throwIfAborted();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const authenticated = await isMuseAuthenticated();
+    signal.throwIfAborted();
+    if (authenticated) { museAuthenticated = true; return; }
+    if (!attempt) await sleep(750);
+  }
+  const error = await museReadinessError();
+  signal.throwIfAborted();
+  if (error.status === 401) museAuthenticated = false;
+  throw error;
 }
 
 async function isMuseAuthenticated(page = musePage) {
@@ -448,7 +476,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await composer.evaluate((element) => element.maxLength);
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files);
-    const beforeMessageIds = (await readChatMessages()).map((message) => message.id);
+    const beforeMessageIds = await musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-message-id")));
     const beforeMedia = await readMediaSources();
     if (prompt) await composer.fill(prompt);
     signal.throwIfAborted();
@@ -468,6 +496,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
           await formButton.click();
         } else {
           conversation.pendingSubmission = undefined;
+          await saveConversations();
           throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do Muse. Configure MUSE_SEND_SELECTOR para o botão desta página.");
         }
       }
@@ -486,9 +515,11 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
   return { text: response, attachments };
 }
 
-async function readChatMessages() {
+async function readChatMessages(beforeMessageIds) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || "[data-hatch-assistant-message-body]";
-  return musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups, selector) => groups.map((group) => {
+  return musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups, { selector, beforeMessageIds }) => {
+    const previous = new Set(beforeMessageIds);
+    return groups.filter((group) => !previous.has(group.getAttribute("data-message-id"))).map((group) => {
     const role = group.getAttribute("data-message-role");
     const assistant = group.matches(selector) ? group : group.querySelector(selector);
     const text = assistant?.innerText || "";
@@ -497,10 +528,11 @@ async function readChatMessages() {
     return {
       id: group.getAttribute("data-message-id"), role,
       error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
-      text: role === "assistant" ? standaloneJson ? jsonCode : text : group.querySelector("p")?.textContent || "",
+      text: role === "assistant" ? standaloneJson ? jsonCode : text : "",
       busy: role === "assistant" && (!assistant || assistant.closest('[aria-busy]')?.getAttribute("aria-busy") === "true"),
     };
-  }), selector);
+    });
+  }, { selector, beforeMessageIds });
 }
 
 async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
@@ -511,7 +543,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     signal.throwIfAborted();
     await sleep(500);
     await rememberThread();
-    const messages = await readChatMessages();
+    const messages = await readChatMessages(beforeMessageIds);
     const user = messages.findLast((message) => message.role === "user" && !beforeMessageIds.includes(message.id));
     if (user?.error) {
       if (isPromptSizeError(user.error)) {
@@ -793,30 +825,29 @@ async function handleCompletion(req, res) {
   res.once("close", () => {
     if (!res.writableEnded) disconnected.abort(new Error("O cliente encerrou a solicitação."));
   });
-  const signal = AbortSignal.any([disconnected.signal, AbortSignal.timeout(180000)]);
+  let signal = disconnected.signal;
   try {
-    const completion = await serialize(async () => {
+    const completion = await queue.run(async (queueWaitMs) => {
+      signal = AbortSignal.any([disconnected.signal, AbortSignal.timeout(180000)]);
       signal.throwIfAborted();
       activeRequestHash = requestHash;
       activeSessionId = sessionId;
       conversation = conversations.get(sessionId) || {};
       try {
       if (requestHash === conversation.previousRequestHash && conversation.previousResponse) return conversation.previousResponse;
+      if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) {
+        throw Object.assign(new Error(`Esta sessão tem um envio ainda não confirmado há ${Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000)} segundos. A nova chamada não foi enviada ao Muse. Retome a solicitação original para ler sua resposta, sem reenviá-la; não apague o pendente sem conferir a conversa no painel.`), { status: 409, code: "submission_pending", retryable: false });
+      }
+      console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "started", queueWaitMs }));
       if (!musePage || !browser || browser.isConnected?.() === false) {
         throw new Error(browserError || "O navegador Muse ainda não está conectado. Confira o painel local.");
       }
-      museAuthenticated = await isMuseAuthenticated();
-      if (!museAuthenticated) {
-        throw Object.assign(new Error(`Autentique o Muse no painel local: http://127.0.0.1:${API_PORT}/`), { status: 401 });
-      }
+      await requireMuseReady(signal);
       browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
       browserError = "";
       await selectConversation(sessionId);
       const tools = toolList(body);
       let requestMessages;
-      if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) {
-        throw Object.assign(new Error("Esta sessão tem um envio ainda não confirmado. Retome a mesma solicitação antes de enviar outra mensagem."), { status: 409 });
-      }
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
       } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
@@ -824,19 +855,7 @@ async function handleCompletion(req, res) {
       } else {
         requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice);
       }
-      let answer;
-      try {
-        answer = await submitText(requestMessages.prompt, requestMessages.files, requestHash, signal);
-      } catch (error) {
-        if (error.message.includes("Não encontrei a caixa de mensagem")) {
-          museAuthenticated = await isMuseAuthenticated();
-          if (!museAuthenticated) {
-            browserState = "Muse precisa de autenticação";
-            error.status = 401;
-          }
-        }
-        throw error;
-      }
+      let answer = await submitText(requestMessages.prompt, requestMessages.files, requestHash, signal);
       let result = makeCompletion(answer.text, answer.attachments, body);
       if (!result.choices[0].message.tool_calls && tools.length && looksLikeToolCall(answer.text) && conversation.pendingSubmission.attempt === 0) {
         const retryPrompt = [
@@ -865,18 +884,21 @@ async function handleCompletion(req, res) {
         activeRequestHash = "";
         activeSessionId = "";
       }
-    });
+    }, { sessionId, signal: disconnected.signal });
     if (body.stream) sendSse(res, completion);
     else sendJson(res, 200, completion);
   } catch (error) {
     if (res.destroyed) return;
-    const status = error.status || (signal.aborted || conversation.pendingSubmission?.requestHash === requestHash ? 409 : 502);
+    const pageTimeout = error.name === "TimeoutError";
+    const status = signal.aborted ? 409 : error.status || (conversations.get(sessionId)?.pendingSubmission?.requestHash === requestHash ? 409 : pageTimeout ? 503 : 502);
     const message = signal.aborted
       ? "A chamada atingiu o limite de 3 minutos. Se houve envio ao Muse, ele foi preservado: uma nova tentativa da mesma chamada retoma a leitura, sem reenviar."
+      : pageTimeout ? "A página do Muse demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
       : error.message || "Falha ao conversar com o Muse.";
-    const code = error.code || (status === 401 ? "muse_authentication_required" : signal.aborted ? "request_timeout" : status === 409 ? "submission_pending" : "upstream_error");
+    const code = signal.aborted ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
     console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
-    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: error.retryable } });
+    if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
+    sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: error.retryable ?? (signal.aborted || pageTimeout ? true : undefined) } });
   }
 }
 
@@ -907,13 +929,14 @@ function dashboardHtml() {
 </style></head><body><div class="wrap">
 <h1>Muse → OpenCode</h1><div class="muted">${MANAGED_AUTH_BROWSER ? "O login e a API usam a mesma sessão do Chromium dentro do Docker." : BROWSER_CDP_ENDPOINT ? "O OpenCode usa o navegador do endpoint CDP configurado." : "A página do Muse aparece como prévia; o controle remoto é encaminhado ao navegador Obscura."}</div>
 <section class="card"><div class="status"><span id="dot" class="dot"></span><strong id="status">Conectando ao navegador…</strong><span id="url" class="muted"></span></div><div id="error" class="error"></div>${screenshot}
-${browserControls}</section>
+${browserControls}<p id="queueStatus" class="hint muted" role="status"></p></section>
 ${configSection}
 <section class="card"><strong>Atualizações e limites</strong><p id="updateStatus" class="muted" role="status">Consulte novas versões quando desejar.</p><button id="checkUpdate">Verificar atualização</button><p class="hint">Limite local por envio ao Muse: ${MAX_PROMPT_CHARS} caracteres, incluindo instruções e ferramentas. Divida demandas grandes em etapas.</p><p class="hint">Para atualizar, na pasta instalada execute <code>python3 instalar-opencode.py --update</code> no WSL ou <code>.\\instalar.ps1 -Atualizar</code> no PowerShell. O volume com seu login e suas conversas é preservado.</p></section>
 </div><script>
 const token=${JSON.stringify(controlToken)};const config=${configText};const externalCdp=${Boolean(BROWSER_CDP_ENDPOINT)};document.querySelector('#config').textContent=config;
 async function control(path,body){const r=await fetch('/control/'+path,{method:body?'POST':'GET',headers:{'X-Control-Token':token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error((await r.json()).error||'Falha no painel');return r;}
-async function refresh(){try{const s=await(await control('status')).json();document.querySelector('#status').textContent=s.state;document.querySelector('#url').textContent=s.url||'';document.querySelector('#error').textContent=s.error||'';document.querySelector('#dot').classList.toggle('ok',s.authenticated);if(externalCdp)return;const r=await control('screenshot');const blob=await r.blob();const img=document.querySelector('#screen');if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);img.src=URL.createObjectURL(blob);}catch(e){document.querySelector('#error').textContent=e.message;}}
+let refreshing=false;
+async function refresh(){if(refreshing)return;refreshing=true;try{const s=await(await control('status')).json();document.querySelector('#status').textContent=s.state;document.querySelector('#queueStatus').textContent=(s.request?'Uma chamada em execução. ':'Ponte livre. ')+(s.queue?.waiting||0)+' chamada(s) aguardando na fila.';document.querySelector('#url').textContent=s.url||'';document.querySelector('#error').textContent=s.error||'';document.querySelector('#dot').classList.toggle('ok',s.authenticated);if(externalCdp)return;const r=await control('screenshot');const blob=await r.blob();const img=document.querySelector('#screen');if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);img.src=URL.createObjectURL(blob);}catch(e){document.querySelector('#error').textContent=e.message;}finally{refreshing=false;}}
 document.querySelector('#screen')?.addEventListener('click',async e=>{const r=e.currentTarget.getBoundingClientRect();await control('action',{action:'click',x:(e.clientX-r.left)*e.currentTarget.naturalWidth/r.width,y:(e.clientY-r.top)*e.currentTarget.naturalHeight/r.height});});
 document.querySelector('#screen')?.addEventListener('wheel',e=>{e.preventDefault();control('action',{action:'scroll',deltaY:e.deltaY,deltaX:e.deltaX});},{passive:false});
 if(document.querySelector('#type'))document.querySelector('#type').onclick=async()=>{const field=document.querySelector('#typed');if(!field.value)return;await control('action',{action:'type',text:field.value});field.value='';};
@@ -935,15 +958,16 @@ async function handleControl(req, res, url) {
     if (musePage && !musePage.isClosed() && browser?.isConnected()) {
       const authenticated = await isMuseAuthenticated();
       if (authenticated && !museAuthenticated) browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
-      if (!authenticated && museAuthenticated) {
-        browserState = MANAGED_AUTH_BROWSER ? "Muse precisa de autenticação no Chromium do Docker" : "Muse precisa de autenticação";
-      }
+      if (!authenticated) browserState = (await museReadinessError()).status === 401
+        ? "Muse exibiu uma tela de autenticação; conclua o login"
+        : "Página do Muse carregando ou temporariamente indisponível; perda de login não confirmada";
       museAuthenticated = authenticated;
     }
     return sendJson(res, 200, {
       ready: Boolean(musePage && !musePage.isClosed() && browser?.isConnected()), authenticated: museAuthenticated,
       state: browserState, error: browserError, url: musePage?.url() || "",
       request: activeRequestHash ? activeRequestHash.slice(0, 12) : null,
+      queue: queue.status(),
       session: activeSessionId || null,
       pending: conversation.pendingSubmission ? { phase: conversation.pendingSubmission.phase, elapsedMs: Date.now() - conversation.pendingSubmission.startedAt } : null,
     });
@@ -1018,13 +1042,6 @@ async function handleControl(req, res, url) {
   return sendJson(res, 404, { error: "Rota do painel não encontrada." });
 }
 
-function serialize(task) {
-  // ponytail: one browser tab serializes sessions; use isolated tabs to support parallel requests.
-  const result = queue.then(task, task);
-  queue = result.catch(() => {});
-  return result;
-}
-
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${API_HOST}:${API_PORT}`);
   if (req.method === "GET" && url.pathname === "/") {
@@ -1035,7 +1052,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
-    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: 180 } }] });
+    return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: 180, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return handleCompletion(req, res);
   sendJson(res, 404, { error: { message: "Rota não encontrada.", type: "not_found_error" } });
