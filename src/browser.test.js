@@ -45,14 +45,29 @@ test("browser API distinguishes loading from login and resumes delayed responses
         }else if(!prompt.includes('NEVER_REPLY')){
           function finish(){
           const reply=document.createElement('div');reply.dataset.messageId='reply-'+count;reply.dataset.messageRole='assistant';
+          reply.setAttribute('aria-busy','false');
           const body=document.createElement('div');body.setAttribute('data-hatch-assistant-message-body','');
+          if(prompt.includes('MEDIA_ONLY')){
+            const image=document.createElement('img');image.alt='fixture image';image.src='data:image/png;base64,aGVsbG8=';
+            reply.append(body,image);document.querySelector('main').append(reply);
+            return;
+          }
+          if(prompt.includes('PAUSED_GENERATION')){
+            body.textContent='PARTIAL_RESPONSE';
+            reply.append(body);document.querySelector('main').append(reply);
+            setTimeout(()=>{body.textContent='FIXTURE_COMPLETE';const copy=document.createElement('button');copy.setAttribute('aria-label','Copy response');reply.append(copy);},2600);
+            return;
+          }
           if(prompt.includes('JSON_BLOCK')){
             body.append('json');const pre=document.createElement('pre');pre.className='language-json';
             const code=document.createElement('code');code.textContent=JSON.stringify({type:'final',text:'FIXTURE_JSON'});pre.append(code);body.append(pre);
           }else{body.textContent='FIXTURE_OK';}
-          reply.append(body);document.querySelector('main').append(reply);
+          const copy=document.createElement('button');copy.setAttribute('aria-label','Copy response');
+          reply.append(body,copy);document.querySelector('main').append(reply);
           }
-          if(prompt.includes('SLOW_REPLY'))setTimeout(finish,6500);else finish();
+          if(prompt.includes('SLOW_REPLY'))setTimeout(finish,6500);
+          else if(prompt.includes('SLOW_CLIENT'))setTimeout(finish,1400);
+          else finish();
         }
         document.querySelector('textarea').value='';
       }
@@ -82,10 +97,11 @@ test("browser API distinguishes loading from login and resumes delayed responses
     const token = JSON.parse(html.match(/const token=("[a-f0-9]+");const config=/)[1]);
     await until(async () => (await (await fetch(base + "/control/status", { headers: { "X-Control-Token": token } })).json()).authenticated);
     const key = (await readFile(join(directory, "api-key"), "utf8")).trim();
-    const send = async (text, session = "fixture") => {
+    const send = async (text, session = "fixture", signal) => {
       const response = await fetch(base + "/v1/chat/completions", {
         method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Muse-Session-Id": session },
-        body: JSON.stringify({ messages: [{ role: "user", content: text }] }), signal: AbortSignal.timeout(25000),
+        body: JSON.stringify({ messages: [{ role: "user", content: text }] }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
       });
       return { status: response.status, body: await response.json(), retryAfter: response.headers.get("retry-after") };
     };
@@ -96,7 +112,7 @@ test("browser API distinguishes loading from login and resumes delayed responses
     };
     await page.evaluate(() => { document.querySelector('textarea').style.display = 'none'; setTimeout(() => { document.querySelector('textarea').style.display = ''; }, 6000); });
     let result = await send("Espere a página ficar pronta", "delayed");
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
     assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
     await page.evaluate(() => { document.querySelector('textarea').style.display = 'none'; });
     const beforeUnavailable = await page.locator('[data-message-role="user"]').count();
@@ -131,6 +147,15 @@ test("browser API distinguishes loading from login and resumes delayed responses
     result = await send("JSON_BLOCK");
     assert.equal(result.status, 200);
     assert.equal(result.body.choices[0].message.content, "FIXTURE_JSON");
+    result = await send("MEDIA_ONLY");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.attachments[0].mime_type, "image/png");
+    assert.equal(Buffer.from(result.body.choices[0].message.attachments[0].data, "base64").toString(), "hello");
+    const pausedStartedAt = Date.now();
+    result = await send("PAUSED_GENERATION");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_COMPLETE");
+    assert.ok(Date.now() - pausedStartedAt >= 4000, "partial text without the completion control must not be returned");
     await page.getByRole("button", { name: "Send" }).evaluate((button) => button.remove());
     result = await send("Sem botão de envio");
     assert.equal(result.status, 502);
@@ -151,6 +176,21 @@ test("browser API distinguishes loading from login and resumes delayed responses
     const completed = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
     for (const id of ["one", "two", "three", "four"]) assert.equal(completed["parallel-" + id].pendingSubmission, undefined);
     assert.equal(new Set(["one", "two", "three", "four"].map((id) => completed["parallel-" + id].url)).size, 4);
+    const disconnectedController = new AbortController();
+    const disconnectedRequest = send("SLOW_CLIENT", "client-disconnect", disconnectedController.signal);
+    disconnectedRequest.catch(() => {});
+    await until(async () => await page.locator('[data-message-role="user"]').count() === 1);
+    disconnectedController.abort();
+    await assert.rejects(disconnectedRequest, (error) => error.name === "AbortError");
+    await until(async () => {
+      const saved = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
+      return saved["client-disconnect"]?.pendingSubmission === undefined
+        && saved["client-disconnect"]?.previousResponse?.choices?.[0]?.message?.content === "FIXTURE_OK";
+    });
+    result = await send("SLOW_CLIENT", "client-disconnect");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.choices[0].message.content, "FIXTURE_OK");
+    assert.equal(await page.locator('[data-message-role="user"]').count(), 1, "a retry reads the cached completion instead of sending twice");
     serverProcess.kill("SIGTERM");
     await children.at(-1).exited;
     serverProcess = startServer(5000);

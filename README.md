@@ -74,9 +74,13 @@ Uma sessão com envio persistido ainda não confirmado recebe `409 submission_pe
 
 A fila HTTP fica em memória; reiniciar desconecta os pedidos aguardando e os clientes precisam tentar novamente. Os envios já iniciados continuam registrados no volume para recuperação, sem reenvio automático. Redis não é necessário para o único processo atual; um broker faria sentido ao separar a API de workers ou compartilhar a fila entre processos. Ele não aumenta a capacidade da aba nem resolve a renderização de conversas grandes.
 
+Se o OpenCode fechar a conexão HTTP depois que a chamada começar, a ponte continua acompanhando a mesma resposta e a grava no volume. A próxima repetição idêntica recebe o resultado armazenado; a mensagem não é enviada duas vezes. Chamadas que ainda estão aguardando na fila são canceladas e não chegam ao Muse.
+
 ### Recuperação após timeout
 
 Timeouts de execução e de navegação retornam `503`, `retryable: true` e `Retry-After: 2`, para permitir uma nova tentativa do cliente. Repita a mesma requisição com o mesmo ID de sessão: se já houve envio, a ponte retoma a leitura da conversa, sem preencher ou clicar em enviar novamente. Se a resposta já tiver sido concluída, retorna a resposta armazenada. Uma conexão encerrada não pode receber uma resposta depois; a entrega exige que o cliente volte a consultar a API. O número de retries automáticos também depende do cliente.
+
+Para evitar devolver uma resposta enquanto o Muse ainda está gerando, a ponte espera o indicador `aria-busy=false`, o botão “Copy response” e texto estável. Cada operação crítica do Playwright tem prazo máximo de 15 segundos. Se travar, a ponte desconecta apenas a automação Playwright, mantém o Chromium e o perfil abertos, reconecta e tenta retomar o mesmo envio até duas vezes na chamada. Ela nunca clica em enviar durante a recuperação.
 
 O contador de timeouts de recuperação fica salvo junto do envio no volume. Após três timeouts do mesmo envio, a ponte retorna `409 submission_review_required` com `retryable: false`, pedindo conferência da conversa em vez de retry automático indefinido. Não apaga o pendente nem reenvia a mensagem. Uma tentativa manual da solicitação original continua podendo recuperar uma resposta que apareça depois. Pedidos diferentes permanecem bloqueados por `submission_pending` para não entregar uma operação antiga como resposta de outra tarefa.
 
@@ -102,7 +106,7 @@ Se o próprio Muse exibir uma rejeição explícita de tamanho no envio, a ponte
 
 Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=60000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
 
-Uma tela de login identificada por campos e texto de autenticação usa `code: muse_authentication_required` (`401`). A ausência temporária da caixa de mensagem recebe uma segunda verificação e, se persistir sem evidência de login, retorna `503` com `muse_page_not_ready` e `retryable: true`. Timeouts do navegador usam `muse_page_timeout`; expiração da chamada usa `request_timeout`. Esses casos não são apresentados como perda de login. O cliente deve repetir a mesma solicitação para retomar um envio pendente sem duplicá-lo.
+Uma tela de login identificada por campos e texto de autenticação usa `code: muse_authentication_required` (`401`). A ausência temporária da caixa de mensagem recebe uma segunda verificação e, se persistir sem evidência de login, retorna `503` com `muse_page_not_ready` e `retryable: true`. Leituras CDP interrompidas usam `muse_browser_operation_timeout` ou `muse_browser_reconnecting`; a expiração da chamada usa `request_timeout`. Esses casos não são apresentados como perda de login. O cliente deve repetir a mesma solicitação para retomar um envio pendente sem duplicá-lo.
 
 Envios pendentes usam `submission_pending` (`409`). Os logs incluem código e tamanhos quando disponíveis, sem registrar conteúdo das mensagens. Envios incertos continuam preservados para evitar duplicação.
 
