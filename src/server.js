@@ -573,6 +573,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
 
 async function submitWithRecovery(sessionId, prompt, files, requestHash, signal, attempt = 0) {
   let recoveries = 0;
+  let deliveryRetries = 0;
   while (true) {
     try {
       signal.throwIfAborted();
@@ -587,6 +588,13 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
       await selectConversation(sessionId, signal);
       return await submitText(prompt, files, requestHash, signal, attempt);
     } catch (error) {
+      if (error.code === "muse_delivery_failed" && !signal.aborted && deliveryRetries < 2) {
+        // O Muse não entregou (o pendente já foi solto): reenvia sozinho, sem o usuário repetir.
+        deliveryRetries++;
+        console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "delivery_retry", attempt: deliveryRetries }));
+        await sleep(3000 * deliveryRetries);
+        continue;
+      }
       const pending = conversation.pendingSubmission;
       const recoverable = isBrowserRecoveryError(error) || error.name === "TimeoutError";
       // ponytail: two in-call reconnects cap retries; the same request remains resumable afterward.
