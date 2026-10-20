@@ -623,6 +623,22 @@ async function readChatMessages(beforeMessageIds, signal) {
   }, { selector, beforeMessageIds }), signal, "Ler as mensagens novas do Muse");
 }
 
+// Uma nova mensagem chegou com um envio antigo pendente: se o Muse marcou aquele envio como não entregue, solta o pendente.
+async function releaseUndeliveredPending(sessionId, signal) {
+  try {
+    await requireMuseReady(signal);
+    await selectConversation(sessionId, signal);
+    const messages = await readChatMessages(conversation.pendingSubmission.beforeMessageIds, signal);
+    const user = messages.findLast((message) => message.role === "user" && message.error);
+    if (!user || !isDeliveryError(user.error)) return;
+    console.info(JSON.stringify({ event: "muse_submission", request: conversation.pendingSubmission.requestHash.slice(0, 12), phase: "released_undelivered" }));
+    conversation.pendingSubmission = undefined;
+    await saveConversations();
+  } catch (error) {
+    if (signal?.aborted) throw error; // sem conferir, o pendente continua protegido
+  }
+}
+
 async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
   const started = Date.now();
   let lastText = "";
@@ -941,6 +957,7 @@ async function handleCompletion(req, res) {
       }
       try {
       if (requestHash === conversation.previousRequestHash && conversation.previousResponse) return conversation.previousResponse;
+      if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) await releaseUndeliveredPending(sessionId, signal);
       if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) {
         throw Object.assign(new Error(`Esta sessão tem um envio ainda não confirmado há ${Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000)} segundos. A nova chamada não foi enviada ao Muse. Retome a solicitação original para ler sua resposta, sem reenviá-la; não apague o pendente sem conferir a conversa no painel.`), { status: 409, code: "submission_pending", retryable: false });
       }
