@@ -189,3 +189,8 @@ export function checkPromptLength(prompt, limit) {
 export function isPromptSizeError(text) {
   return /(?:message|prompt|input|text)[\s\S]{0,100}(?:too (?:long|large)|exceeds? (?:the )?(?:maximum|character)|longer than)|(?:mensagem|texto|entrada)[\s\S]{0,100}(?:muito (?:long[ao]|grande)|excede.{0,30}(?:caracteres|tamanho))|maximum (?:prompt|message|input|text) length/i.test(text);
 }
+
+// O Muse avisa que a mensagem não chegou: reenviar é seguro, não há duplicação.
+export function isDeliveryError(text) {
+  return /delivery not confirmed|entrega n[ãa]o confirmada|falha (?:na|ao) (?:entrega|enviar)|failed to (?:send|deliver)/i.test(text);
+}

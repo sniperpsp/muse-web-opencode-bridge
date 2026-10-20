@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
-import { checkPromptLength, isPromptSizeError } from "./protocol.js";
+import { checkPromptLength, isDeliveryError, isPromptSizeError } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
@@ -643,6 +643,12 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
         throw Object.assign(new Error(`O Muse recusou o texto por tamanho. Reformule a chamada com até ${suggested} caracteres no texto final, incluindo instruções e ferramentas. Esse valor é uma sugestão para reduzir o envio; o limite real do site não foi informado. Não repita o mesmo payload.`), {
           status: 400, code: "muse_prompt_too_large", received_chars: received, suggested_max_prompt_chars: suggested, retryable: false,
         });
+      }
+      if (isDeliveryError(user.error)) {
+        // O site diz que a mensagem não foi entregue: soltar o pendente para a nova tentativa reenviar.
+        conversation.pendingSubmission = undefined;
+        await saveConversations();
+        throw Object.assign(new Error(`O Muse não entregou a mensagem (${user.error}). Tente novamente: a ponte reenvia sem duplicar.`), { status: 503, code: "muse_delivery_failed", retryable: true });
       }
       throw Object.assign(new Error(`O Muse não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
     }

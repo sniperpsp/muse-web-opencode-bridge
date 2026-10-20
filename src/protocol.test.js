@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
-import { checkPromptLength, isPromptSizeError } from "./protocol.js";
+import { checkPromptLength, isDeliveryError, isPromptSizeError } from "./protocol.js";
 import { updateStatus } from "./updates.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -314,4 +314,9 @@ test("live API preserves session threads across retries, switching and container
   assert.equal(mapping[marker], thread[marker], "Voltar à sessão A precisa reutilizar a mesma conversa do Muse.");
   assert.notEqual(mapping[marker], mapping[marker + "_B"], "Sessões distintas precisam ter conversas distintas.");
 
+});
+
+test("delivery failures are retryable but rate limits stay preserved", () => {
+  for (const text of ["Delivery not confirmed", "Message failed to send", "Falha ao enviar"]) assert.ok(isDeliveryError(text), text);
+  for (const text of ["Rate limit exceeded", "Usage limit reached", "Message is too long"]) assert.equal(isDeliveryError(text), false, text);
 });
