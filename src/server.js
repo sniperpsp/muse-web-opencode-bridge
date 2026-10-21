@@ -634,7 +634,16 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
           status: 503, code: "muse_browser_reconnecting", retryable: true,
         });
       }
-      await requireMuseReady(signal);
+      try { await requireMuseReady(signal); }
+      catch (readyError) {
+        if (readyError.code !== "muse_page_not_ready" || !(await museThreadBroken(signal))) throw readyError;
+        // A página ficou presa numa thread quebrada: tenta o Try again do Muse e, se persistir, sai dela para a página inicial.
+        if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
+          console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: musePage.url() }));
+          await museBrowserOperation(() => musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
+        }
+        await requireMuseReady(signal);
+      }
       browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
       browserError = "";
       await selectConversation(sessionId, signal);
