@@ -131,3 +131,22 @@ docker compose up --build -d
 | Muse responde com /home/hatch ou diz não acessar o WSL | Verifique se o OpenCode enviou ferramentas e se a imagem Docker está atualizada. Esse caminho pertence à VM do Muse; uma execução local deve aparecer no OpenCode como chamada de ferramenta. |
 
 A cota e as regras de uso continuam sendo as da conta e da interface web do Muse; esta ponte não cria uma API oficial do Muse.
+
+## Resiliência e peso da conversa (2026-10)
+
+Melhorias feitas a partir de falhas reais de uso longo com o OpenCode. Todas estão em `src/server.js` e `src/protocol.js`, com testes das funções puras em `src/protocol.test.js`.
+
+| Problema observado | O que a ponte faz agora | Evento no log |
+|---|---|---|
+| O Muse mostra "Delivery not confirmed" e a sessão ficava presa em `submission_pending` | Solta o envio pendente e reenvia sozinha até 2 vezes, com 3 s e 6 s de espera. O site informou que a mensagem não chegou, então não duplica. Outros alertas (limite de uso, muitas requisições) continuam preservados | `delivery_retry`, `released_undelivered` |
+| Chegava uma mensagem nova numa sessão com envio antigo não entregue | Confere a conversa no Muse e libera o pendente se o site o marcou como não entregue | `released_undelivered` |
+| A aba do Muse chegava a 1,7 milhão de caracteres e 3 GB de memória, deixando a página lenta (ponto laranja, falhas de entrega) | Nas mensagens seguintes envia só as mensagens novas e uma linha curta; o catálogo completo de ferramentas volta a cada 6 envios ou quando ele muda | `waiting.promptChars` |
+| Mesmo assim a conversa cresce | Abre outra thread no Muse depois de 300 mil caracteres de crescimento ou 40 turnos (`MUSE_ROTATE_CHARS`, `MUSE_ROTATE_TURNS`). O primeiro envio, grande por natureza, não conta. A thread nova recebe as instruções do sistema e as mensagens mais recentes que cabem no limite | `thread_rotated` |
+| Reiniciar a ponte derrubava o envio em andamento | O corpo da chamada é guardado junto do envio pendente. Ao subir, se o envio já foi entregue e tem menos de 30 minutos, a ponte repete a mesma chamada só para retomar a leitura e deixa a resposta no cache para o retry do OpenCode | `resumed_after_restart` |
+| O Muse mostrava a resposta, mas não a marcava como concluída, e a ponte esperava para sempre | Aceita a resposta quando o texto para de mudar por 60 s (`MUSE_STALL_MS`) | n/d |
+| A thread quebrava ("Something went wrong", "Conversation controls unavailable") e a caixa de mensagem sumia | Clica no **Try again** do site; se persistir, sai da página quebrada, abandona a thread e pede nova tentativa com o prompt completo numa thread nova | `site_try_again`, `left_broken_page`, `thread_abandoned` |
+| O Muse reescrevia de memória o `oldString` do `edit` e o OpenCode recusava | As instruções, completas e curtas, mandam copiar o `oldString` exatamente do último `read` e reler o arquivo quando o `edit` falha | n/d |
+
+Limites que continuam valendo: reenvios automáticos são no máximo 2 por chamada; a retomada após reinício não mexe em envios com mais de 30 minutos nem em envios cuja entrega ao Muse não foi confirmada; uma recusa de entrega deixa uma mensagem duplicada no histórico da thread do Muse, sem afetar as respostas.
+
+Para ajustar sem alterar código, defina as variáveis no `.env` e recrie a ponte numa pausa: `MUSE_ROTATE_CHARS`, `MUSE_ROTATE_TURNS`, `MUSE_STALL_MS`.
