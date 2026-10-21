@@ -194,3 +194,27 @@ export function isPromptSizeError(text) {
 export function isDeliveryError(text) {
   return /delivery not confirmed|entrega n[ãa]o confirmada|falha (?:na|ao) (?:entrega|enviar)|failed to (?:send|deliver)/i.test(text);
 }
+
+// Mantém as instruções system/developer e as mensagens mais recentes que cabem no orçamento, começando num turno do usuário
+// para não separar a chamada de ferramenta do seu resultado. A última mensagem do usuário nunca é descartada.
+export function fitHistory(messages, budget) {
+  const isHead = (message) => message.role === "system" || message.role === "developer";
+  const head = messages.filter(isHead);
+  const rest = messages.filter((message) => !isHead(message));
+  const size = (message) => JSON.stringify(message).length;
+  let used = head.reduce((total, message) => total + size(message), 0);
+  let start = rest.length;
+  while (start > 0 && used + size(rest[start - 1]) <= budget) used += size(rest[--start]);
+  const lastUser = rest.findLastIndex((message) => message.role === "user");
+  if (lastUser >= 0) {
+    start = Math.min(start, lastUser);
+    while (start < lastUser && rest[start].role !== "user") start++;
+  }
+  return { messages: [...head, ...rest.slice(start)], omitted: start };
+}
+
+// A conversa do Muse acumula texto na página; passando do limite, a ponte abre outra thread.
+export function needsRotation(conversation, maxChars, maxTurns) {
+  return Boolean(conversation.url) && ((conversation.threadChars || 0) > maxChars || (conversation.turns || 0) >= maxTurns);
+}
+

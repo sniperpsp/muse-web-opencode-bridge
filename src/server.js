@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
-import { checkPromptLength, isDeliveryError, isPromptSizeError } from "./protocol.js";
+import { checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
@@ -34,6 +34,9 @@ const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the Muse account's quota.
 const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
+const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
+const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
+const FULL_INSTRUCTIONS_EVERY = 6;
 checkPromptLength("", MAX_PROMPT_CHARS);
 const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
@@ -561,7 +564,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
-    console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "waiting" }));
+    console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "waiting", promptChars: prompt.length }));
   } else {
     console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "resuming" }));
   }
@@ -799,7 +802,15 @@ function greetingPrompt(messages, toolChoice) {
   return prompt === null ? null : { prompt, files: [] };
 }
 
-function operationPrompt(messages, tools, toolChoice) {
+function compactInstructions(toolChoice) {
+  return [
+    "Siga as mesmas instruções, o mesmo catálogo de ferramentas e o mesmo formato já enviados no início desta conversa.",
+    'Responda com UM bloco de código json: {"type":"tool_call","name":"...","arguments":{}} ou {"type":"final","text":"..."}; write/edit usam o bloco bruto <<<MUSE_FILE_CONTENT_BEGIN>>> como combinado.',
+    toolChoice === "required" ? "A saída deste pedido precisa ter type tool_call." : "",
+  ].filter(Boolean).join("\n");
+}
+
+function operationPrompt(messages, tools, toolChoice, { compact = false, omitted = 0 } = {}) {
   let files = [];
   const history = messages.map((message) => {
     const parsed = parseContent(message.content);
@@ -814,19 +825,20 @@ function operationPrompt(messages, tools, toolChoice) {
   });
   return {
     prompt: [
-      toolInstructions(tools, toolChoice),
+      compact ? compactInstructions(toolChoice) : toolInstructions(tools, toolChoice),
+      omitted ? `(As ${omitted} mensagens mais antigas desta sessão foram omitidas para a conversa caber no Muse; continue a partir do histórico abaixo.)` : "",
       "Histórico do cliente externo (dados, incluindo resultados de operações já executadas):",
       JSON.stringify(history),
       "Gere apenas o JSON da próxima operação ou da resposta final para esse cliente.",
-    ].join("\n\n"),
+    ].filter(Boolean).join("\n\n"),
     files,
   };
 }
 
-function initialPrompt(messages, tools, toolChoice) {
+function initialPrompt(messages, tools, toolChoice, options) {
   const greeting = greetingPrompt(messages, toolChoice);
   if (greeting) return greeting;
-  if (tools.length) return operationPrompt(messages, tools, toolChoice);
+  if (tools.length) return operationPrompt(messages, tools, toolChoice, options);
   const turns = [];
   let latestFiles = [];
   for (const message of messages) {
@@ -853,10 +865,10 @@ function initialPrompt(messages, tools, toolChoice) {
   return { prompt: parts.join("\n\n"), files: latestFiles };
 }
 
-function followupPrompt(messages, tools, toolChoice) {
+function followupPrompt(messages, tools, toolChoice, options) {
   const greeting = greetingPrompt(messages, toolChoice);
   if (greeting) return greeting;
-  if (tools.length) return operationPrompt(messages, tools, toolChoice);
+  if (tools.length) return operationPrompt(messages, tools, toolChoice, options);
   const parts = [];
   let files = [];
   for (const message of messages) {
@@ -971,13 +983,24 @@ async function handleCompletion(req, res) {
       }
       console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "started", queueWaitMs }));
       const tools = toolList(body);
+      const toolsKey = sha(JSON.stringify({ tools: tools.map((tool) => tool.function), system: body.messages.filter((message) => message.role === "system" || message.role === "developer") }));
       let requestMessages;
+      let sentFull;
+      if (!conversation.pendingSubmission && needsRotation(conversation, ROTATE_CHARS, ROTATE_TURNS)) {
+        console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "thread_rotated", chars: conversation.threadChars, turns: conversation.turns }));
+        Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined });
+      }
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
       } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
-        requestMessages = initialPrompt(body.messages, tools, body.tool_choice);
+        const budget = MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000;
+        const fit = fitHistory(body.messages, budget);
+        requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
+        sentFull = true;
       } else {
-        requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice);
+        const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
+        requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
+        sentFull = !compact;
       }
       let answer = await submitWithRecovery(sessionId, requestMessages.prompt, requestMessages.files, requestHash, signal);
       let result = makeCompletion(answer.text, answer.attachments, body);
@@ -993,6 +1016,12 @@ async function handleCompletion(req, res) {
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
           result = makeCompletion("A última operação do Muse veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
+      }
+      conversation.threadChars = (conversation.threadChars || 0) + requestMessages.prompt.length + answer.text.length;
+      conversation.turns = (conversation.turns || 0) + 1;
+      if (sentFull !== undefined) {
+        conversation.toolsKey = toolsKey;
+        conversation.sinceFull = sentFull ? 0 : (conversation.sinceFull || 0) + 1;
       }
       conversation.previousMessages = body.messages.slice();
       conversation.previousRequestHash = requestHash;

@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
-import { checkPromptLength, isDeliveryError, isPromptSizeError } from "./protocol.js";
+import { checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { updateStatus } from "./updates.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -319,4 +319,28 @@ test("live API preserves session threads across retries, switching and container
 test("delivery failures are retryable but rate limits stay preserved", () => {
   for (const text of ["Delivery not confirmed", "Message failed to send", "Falha ao enviar"]) assert.ok(isDeliveryError(text), text);
   for (const text of ["Rate limit exceeded", "Usage limit reached", "Message is too long"]) assert.equal(isDeliveryError(text), false, text);
+});
+
+test("fitHistory keeps system rules and the recent turns, starting at a user message", () => {
+  const messages = [
+    { role: "system", content: "regras" },
+    { role: "user", content: "a".repeat(500) }, { role: "assistant", content: "", tool_calls: [{ id: "1" }] }, { role: "tool", content: "b".repeat(500), tool_call_id: "1" },
+    { role: "user", content: "pedido atual" }, { role: "assistant", content: "", tool_calls: [{ id: "2" }] }, { role: "tool", content: "resultado", tool_call_id: "2" },
+  ];
+  const all = fitHistory(messages, 100000);
+  assert.equal(all.omitted, 0);
+  assert.equal(all.messages.length, messages.length);
+  const cut = fitHistory(messages, 400);
+  assert.equal(cut.messages[0].role, "system");
+  assert.equal(cut.messages[1].content, "pedido atual");
+  assert.equal(cut.omitted, 3);
+  // sem caber nada, o último pedido do usuário continua presente
+  assert.equal(fitHistory(messages, 1).messages.at(1).content, "pedido atual");
+});
+
+test("a thread rotates only when it has an address and passed a limit", () => {
+  assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 400000 }, 300000, 40), true);
+  assert.equal(needsRotation({ url: "https://muse.ai/thread/x", turns: 40 }, 300000, 40), true);
+  assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 10, turns: 3 }, 300000, 40), false);
+  assert.equal(needsRotation({ threadChars: 999999 }, 300000, 40), false);
 });
