@@ -110,7 +110,32 @@ function scheduleReconnect() {
   if (shuttingDown || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
-    openMuseBrowser().catch((error) => {
+    // Envio já entregue ao Muse que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
+// e deixa a resposta pronta; quando o OpenCode repetir a chamada, ela volta do cache.
+async function resumePending() {
+  await sleep(5000);
+  for (const [sessionId, saved] of [...conversations]) {
+    const pending = saved.pendingSubmission;
+    if (pending?.phase !== "waiting" || Date.now() - pending.startedAt > 30 * 60 * 1000 || !saved.pendingBody || sha(JSON.stringify(saved.pendingBody)) !== pending.requestHash) continue;
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${API_PORT}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}`, "x-opencode-session-id": sessionId },
+          body: JSON.stringify({ model: "muse-web", stream: false, ...saved.pendingBody }),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS + 30000),
+        });
+        console.info(JSON.stringify({ event: "muse_submission", request: pending.requestHash.slice(0, 12), phase: "resumed_after_restart", status: response.status }));
+        if (response.status !== 503) break;
+      } catch (error) {
+        console.warn(JSON.stringify({ event: "muse_submission", request: pending.requestHash.slice(0, 12), phase: "resume_failed", error: error.message }));
+      }
+      await sleep(15000);
+    }
+  }
+}
+resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
+openMuseBrowser().catch((error) => {
       browserError = error.message;
       browserState = "Aguardando navegador para reconectar";
       scheduleReconnect();
@@ -975,6 +1000,8 @@ async function handleCompletion(req, res) {
         conversation = { previousMessages: [], previousRequestHash: "" };
         conversations.set(sessionId, conversation);
       }
+      // Guardado com o envio pendente: se o serviço reiniciar, a ponte refaz a chamada sozinha (resumePending).
+      if (!conversation.pendingSubmission) conversation.pendingBody = { messages: body.messages, tools: body.tools, tool_choice: body.tool_choice };
       try {
       if (requestHash === conversation.previousRequestHash && conversation.previousResponse) return conversation.previousResponse;
       if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) await releaseUndeliveredPending(sessionId, signal);
@@ -1028,6 +1055,7 @@ async function handleCompletion(req, res) {
       conversation.previousResponse = result;
       console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "completed", elapsedMs: Date.now() - conversation.pendingSubmission.startedAt, finish: result.choices[0].finish_reason }));
       conversation.pendingSubmission = undefined;
+      delete conversation.pendingBody;
       await rememberThread();
       await saveConversations();
       try {
