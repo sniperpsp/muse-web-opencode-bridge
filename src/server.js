@@ -802,7 +802,7 @@ function toolInstructions(tools, toolChoice) {
   const rawFileBlock = definitions.some((tool) => tool.name === "write" || tool.name === "edit") ? [
     "Para operações write e edit, NÃO coloque o texto do arquivo dentro de uma string JSON. Use o bloco bruto abaixo:",
     '<opencode_tool_call>\n{"type":"tool_call","name":"write","arguments":{"path":"/caminho/arquivo"}}\n<<<MUSE_FILE_CONTENT_BEGIN>>>\n````\nconteúdo completo do arquivo, incluindo tags HTML/JSX, sem escapar aspas\n````\n<<<MUSE_FILE_CONTENT_END>>>\n</opencode_tool_call>',
-    'Para edit, coloque path e oldString no JSON do cabeçalho e use name "edit"; o bloco bruto será o newString. Preserve o restante dos argumentos exigidos pelo schema. O bloco de quatro crases protege HTML/JSX para a página do Muse não interpretar as tags como elementos e removê-las.',
+    'Para edit, coloque path e oldString no JSON do cabeçalho e use name "edit"; o bloco bruto será o newString. Preserve o restante dos argumentos exigidos pelo schema. O oldString precisa ser copiado EXATAMENTE do resultado mais recente de um read desse arquivo (mesmos espaços, acentos, travessões e crases); nunca o reescreva de memória. Prefira um trecho curto e único (1 a 3 linhas). Se o arquivo pode ter mudado ou você não tem o conteúdo atual, faça um read antes do edit. Se o resultado disser que não achou o oldString, releia o arquivo antes de tentar de novo. O bloco de quatro crases protege HTML/JSX para a página do Muse não interpretar as tags como elementos e removê-las.',
     "Use JSON normal para operações sem conteúdo longo e siga sempre o schema anunciado.",
   ].join("\n") : "";
   return [
@@ -832,7 +832,7 @@ function greetingPrompt(messages, toolChoice) {
 function compactInstructions(toolChoice) {
   return [
     "Siga as mesmas instruções, o mesmo catálogo de ferramentas e o mesmo formato já enviados no início desta conversa.",
-    'Responda com UM bloco de código json: {"type":"tool_call","name":"...","arguments":{}} ou {"type":"final","text":"..."}; write/edit usam o bloco bruto <<<MUSE_FILE_CONTENT_BEGIN>>> como combinado.',
+    'Responda com UM bloco de código json: {"type":"tool_call","name":"...","arguments":{}} ou {"type":"final","text":"..."}; write/edit usam o bloco bruto <<<MUSE_FILE_CONTENT_BEGIN>>> como combinado. No edit, copie o oldString exatamente do último read; se tiver dúvida, releia o arquivo.',
     toolChoice === "required" ? "A saída deste pedido precisa ter type tool_call." : "",
   ].filter(Boolean).join("\n");
 }
