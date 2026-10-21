@@ -341,6 +341,7 @@ test("fitHistory keeps system rules and the recent turns, starting at a user mes
 test("a thread rotates only when it has an address and passed a limit", () => {
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 400000 }, 300000, 40), true);
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", turns: 40 }, 300000, 40), true);
+  assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 370000, baseChars: 360000, turns: 1 }, 300000, 40), false);
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 10, turns: 3 }, 300000, 40), false);
   assert.equal(needsRotation({ threadChars: 999999 }, 300000, 40), false);
 });

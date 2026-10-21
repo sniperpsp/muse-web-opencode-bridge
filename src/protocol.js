@@ -214,7 +214,9 @@ export function fitHistory(messages, budget) {
 }
 
 // A conversa do Muse acumula texto na página; passando do limite, a ponte abre outra thread.
+// O primeiro envio (instruções do cliente) é grande por natureza e não conta: vale só o crescimento depois dele.
 export function needsRotation(conversation, maxChars, maxTurns) {
-  return Boolean(conversation.url) && ((conversation.threadChars || 0) > maxChars || (conversation.turns || 0) >= maxTurns);
+  const growth = (conversation.threadChars || 0) - (conversation.baseChars || 0);
+  return Boolean(conversation.url) && (growth > maxChars || (conversation.turns || 0) >= maxTurns);
 }
 

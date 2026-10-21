@@ -1013,9 +1013,10 @@ async function handleCompletion(req, res) {
       const toolsKey = sha(JSON.stringify({ tools: tools.map((tool) => tool.function), system: body.messages.filter((message) => message.role === "system" || message.role === "developer") }));
       let requestMessages;
       let sentFull;
+      if (conversation.baseChars === undefined && conversation.turns) conversation.baseChars = conversation.threadChars; // sessões salvas pela versão anterior
       if (!conversation.pendingSubmission && needsRotation(conversation, ROTATE_CHARS, ROTATE_TURNS)) {
-        console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "thread_rotated", chars: conversation.threadChars, turns: conversation.turns }));
-        Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined });
+        console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "thread_rotated", chars: conversation.threadChars - (conversation.baseChars || 0), turns: conversation.turns }));
+        Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined });
       }
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
@@ -1044,6 +1045,7 @@ async function handleCompletion(req, res) {
           result = makeCompletion("A última operação do Muse veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }
+      if (!conversation.turns) conversation.baseChars = requestMessages.prompt.length;
       conversation.threadChars = (conversation.threadChars || 0) + requestMessages.prompt.length + answer.text.length;
       conversation.turns = (conversation.turns || 0) + 1;
       if (sentFull !== undefined) {
