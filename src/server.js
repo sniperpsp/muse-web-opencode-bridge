@@ -437,7 +437,7 @@ function watchPrimaryBrowser(connectedBrowser) {
   });
 }
 
-async function findComposer(signal) {
+async function findComposer(signal, retriedSite = false) {
   if (!musePage) throw new Error("O navegador ainda está iniciando. Atualize o painel em alguns segundos.");
   if (process.env.MUSE_COMPOSER_SELECTOR) {
     const custom = musePage.locator(process.env.MUSE_COMPOSER_SELECTOR).last();
@@ -455,7 +455,30 @@ async function findComposer(signal) {
   const generic = musePage.locator('textarea, [contenteditable="true"], [role="textbox"]').last();
   try { await museBrowserOperation(() => generic.waitFor({ state: "visible", timeout: 5000 }), signal, "Localizar a caixa de mensagem"); return generic; }
   catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
+  if (!retriedSite && await clickSiteTryAgain(signal)) {
+    await sleep(6000);
+    return findComposer(signal, true);
+  }
   throw await museReadinessError(signal);
+}
+
+// O Muse mostra "Try again" quando a conversa não foi verificada ou a entrega falhou; clicar costuma destravar a caixa de mensagem.
+async function clickSiteTryAgain(signal) {
+  const buttons = musePage.getByRole("button", { name: /^(try again|tentar novamente)$/i });
+  let clicked = 0;
+  for (let i = await museBrowserOperation(() => buttons.count(), signal, "Procurar o botão Try again"); i > 0; i--) {
+    const button = buttons.nth(i - 1);
+    if (await museBrowserOperation(() => button.isVisible(), signal, "Verificar o botão Try again")) {
+      await museBrowserOperation(() => button.click({ timeout: 3000 }), signal, "Clicar em Try again").catch((error) => { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; });
+      clicked++;
+    }
+  }
+  if (clicked) console.info(JSON.stringify({ event: "muse_submission", phase: "site_try_again", clicked }));
+  return clicked > 0;
+}
+
+async function museThreadBroken(signal) {
+  return museBrowserOperation(() => musePage.evaluate(() => /conversation controls unavailable|something went wrong/i.test(document.body.innerText)), signal, "Verificar se a conversa quebrou").catch(() => false);
 }
 
 async function museReadinessError(signal) {
@@ -623,6 +646,14 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
         console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "delivery_retry", attempt: deliveryRetries }));
         await sleep(3000 * deliveryRetries);
         continue;
+      }
+      if (error.code === "muse_page_not_ready" && conversation.url && !signal.aborted && await museThreadBroken(signal)) {
+        // A thread não aceita mais envios nem com o Try again: troca por outra; a nova tentativa refaz o prompt completo.
+        console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "thread_abandoned", url: conversation.url }));
+        Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined, pendingSubmission: undefined });
+        delete conversation.pendingBody;
+        await saveConversations();
+        throw Object.assign(new Error("A conversa do Muse quebrou e foi trocada por uma nova. Repita a mesma solicitação."), { status: 503, code: "muse_thread_reset", retryable: true });
       }
       const pending = conversation.pendingSubmission;
       const recoverable = isBrowserRecoveryError(error) || error.name === "TimeoutError";
