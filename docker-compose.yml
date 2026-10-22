@@ -1,0 +1,25 @@
+services:
+  chatgpt-bridge:
+    build:
+      context: .
+      args:
+        MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
+    environment:
+      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-120000}
+      MUSE_URL: https://chatgpt.com/
+      MUSE_VNC_URL: http://127.0.0.1:4328/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4328&path=websockify
+      MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-180000}
+    image: chatgpt-opencode-bridge:local
+    container_name: chatgpt-opencode-bridge
+    init: true
+    restart: unless-stopped
+    shm_size: 2gb
+    ports:
+      - "127.0.0.1:4327:4317"
+      - "127.0.0.1:4328:7900"
+    volumes:
+      - chatgpt-bridge-data:/data
+
+volumes:
+  chatgpt-bridge-data:
+    name: chatgpt-opencode-bridge-data
