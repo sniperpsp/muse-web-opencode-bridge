@@ -547,7 +547,7 @@ async function startNewChat(signal) {
     waitUntil: "domcontentloaded", timeout: 90000,
   }), signal, "Iniciar conversa no ChatGPT");
   await findComposer(signal);
-  await museBrowserOperation(() => musePage.waitForFunction(() => !document.querySelector('[data-message-author-role]'), null, { timeout: 15000 }), signal, "Aguardar a conversa nova");
+  await museBrowserOperation(() => musePage.waitForFunction(() => !document.querySelector('[data-content-search-unit-key]'), null, { timeout: 15000 }), signal, "Aguardar a conversa nova");
   return true;
 }
 
@@ -584,7 +584,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await museBrowserOperation(() => composer.evaluate((element) => element.maxLength), signal, "Verificar o limite do campo");
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files, signal);
-    const beforeMessageIds = await museBrowserOperation(() => musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-message-id"))), signal, "Identificar as mensagens anteriores");
+    const beforeMessageIds = await museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-content-search-unit-key"))), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
     if (prompt) await museBrowserOperation(() => composer.fill(prompt), signal, "Escrever a mensagem no ChatGPT");
     signal.throwIfAborted();
@@ -680,17 +680,17 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
   }
 }
 
-// Seletores do ChatGPT em um só lugar: se o site mudar, ajustar aqui (ou por MUSE_RESPONSE_SELECTOR). Cada mensagem é [data-message-author-role] com data-message-id.
+// Seletores do ChatGPT em um só lugar: se o site mudar, ajustar aqui (ou por MUSE_RESPONSE_SELECTOR). Cada mensagem é um [data-content-search-unit-key] ("…:user" ou "…:assistant"); o texto da resposta fica em [data-markdown-text-style="assistant-message"].
 const STREAMING_SELECTOR = 'button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Parar" i], [data-testid="stop-button"]';
 async function readChatMessages(beforeMessageIds, signal) {
-  const selector = process.env.MUSE_RESPONSE_SELECTOR || ".markdown, [data-message-content]";
-  return museBrowserOperation(() => musePage.locator('[data-message-author-role]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector }) => {
+  const selector = process.env.MUSE_RESPONSE_SELECTOR || '[data-markdown-text-style="assistant-message"]';
+  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector }) => {
     const previous = new Set(beforeMessageIds);
     const streaming = [...document.querySelectorAll(streamingSelector)].some((el) => el.getBoundingClientRect().width);
-    const all = groups.map((group, index) => ({ group, id: group.getAttribute("data-message-id") || `idx-${index}` }));
-    const lastAssistant = all.filter((item) => item.group.getAttribute("data-message-author-role") === "assistant").pop();
+    const all = groups.map((group) => ({ group, id: group.getAttribute("data-content-search-unit-key") }));
+    const lastAssistant = all.filter((item) => item.id.endsWith(":assistant")).pop();
     return all.filter(({ id }) => !previous.has(id)).map(({ group, id }) => {
-    const role = group.getAttribute("data-message-author-role");
+    const role = id.endsWith(":user") ? "user" : "assistant";
     const assistant = group.matches(selector) ? group : group.querySelector(selector) || group;
     const text = assistant?.innerText || "";
     const jsonCode = assistant?.querySelector('pre code.language-json, pre code')?.innerText;
@@ -699,7 +699,7 @@ async function readChatMessages(beforeMessageIds, signal) {
     const hasResponseMedia = group.querySelector("img, audio, video, a[download]");
     return {
       id, role,
-      error: role === "user" ? group.parentElement?.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
+      error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
       text: role === "assistant" ? standaloneJson ? jsonCode : text : "",
       // Ocupada enquanto o botão "Stop" existe (só vale para a última resposta); sem ele a resposta está terminada.
       busy: role === "assistant" && (!assistant || (streaming && lastAssistant?.id === id)),
