@@ -37,6 +37,7 @@ const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
 const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
 const FULL_INSTRUCTIONS_EVERY = 6;
+const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
 const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
@@ -1047,6 +1048,12 @@ async function handleCompletion(req, res) {
       try {
       if (requestHash === conversation.previousRequestHash && conversation.previousResponse) return conversation.previousResponse;
       if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) await releaseUndeliveredPending(sessionId, signal);
+      // Guardrail: envio preso há mais de PENDING_MAX_MS (padrão 10 min) já passou de qualquer timeout; solta sozinho em vez de bloquear a sessão para sempre.
+      if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash && Date.now() - conversation.pendingSubmission.startedAt > PENDING_MAX_MS) {
+        console.warn(JSON.stringify({ event: "muse_submission", request: conversation.pendingSubmission.requestHash.slice(0, 12), phase: "released_stale", ageS: Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000) }));
+        conversation.pendingSubmission = undefined;
+        await saveConversations();
+      }
       if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) {
         throw Object.assign(new Error(`Esta sessão tem um envio ainda não confirmado há ${Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000)} segundos. A nova chamada não foi enviada ao Muse. Retome a solicitação original para ler sua resposta, sem reenviá-la; não apague o pendente sem conferir a conversa no painel.`), { status: 409, code: "submission_pending", retryable: false });
       }
@@ -1169,14 +1176,14 @@ function dashboardHtml() {
 </style></head><body><div class="wrap">
 <h1>Muse → OpenCode</h1><div class="muted">${MANAGED_AUTH_BROWSER ? "O login e a API usam a mesma sessão do Chromium dentro do Docker." : BROWSER_CDP_ENDPOINT ? "O OpenCode usa o navegador do endpoint CDP configurado." : "A página do Muse aparece como prévia; o controle remoto é encaminhado ao navegador Obscura."}</div>
 <section class="card"><div class="status"><span id="dot" class="dot"></span><strong id="status">Conectando ao navegador…</strong><span id="url" class="muted"></span></div><div id="error" class="error"></div>${screenshot}
-${browserControls}<p id="queueStatus" class="hint muted" role="status"></p></section>
+${browserControls}<p id="queueStatus" class="hint muted" role="status"></p><div class="controls"><button id="clearPending">Limpar pendentes</button><button id="resendPending">Reenviar pendentes</button></div><p id="pendingStatus" class="hint muted" role="status"></p></section>
 ${configSection}
 <section class="card"><strong>Atualizações e limites</strong><p id="updateStatus" class="muted" role="status">Consulte novas versões quando desejar.</p><button id="checkUpdate">Verificar atualização</button><p class="hint">Limite local por envio ao Muse: ${MAX_PROMPT_CHARS} caracteres, incluindo instruções e ferramentas. Divida demandas grandes em etapas.</p><p class="hint">Para atualizar, na pasta instalada execute <code>python3 instalar-opencode.py --update</code> no WSL ou <code>.\\instalar.ps1 -Atualizar</code> no PowerShell. O volume com seu login e suas conversas é preservado.</p></section>
 </div><script>
 const token=${JSON.stringify(controlToken)};const config=${configText};const externalCdp=${Boolean(BROWSER_CDP_ENDPOINT)};document.querySelector('#config').textContent=config;
 async function control(path,body){const r=await fetch('/control/'+path,{method:body?'POST':'GET',headers:{'X-Control-Token':token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error((await r.json()).error||'Falha no painel');return r;}
 let refreshing=false;
-async function refresh(){if(refreshing)return;refreshing=true;try{const s=await(await control('status')).json();document.querySelector('#status').textContent=s.state;document.querySelector('#queueStatus').textContent=(s.request?'Uma chamada em execução. ':'Ponte livre. ')+(s.queue?.waiting||0)+' chamada(s) aguardando na fila.';document.querySelector('#url').textContent=s.url||'';document.querySelector('#error').textContent=s.error||'';document.querySelector('#dot').classList.toggle('ok',s.authenticated);if(externalCdp)return;const r=await control('screenshot');const blob=await r.blob();const img=document.querySelector('#screen');if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);img.src=URL.createObjectURL(blob);}catch(e){document.querySelector('#error').textContent=e.message;}finally{refreshing=false;}}
+async function refresh(){if(refreshing)return;refreshing=true;try{const s=await(await control('status')).json();document.querySelector('#status').textContent=s.state;document.querySelector('#queueStatus').textContent=(s.request?'Uma chamada em execução. ':'Ponte livre. ')+(s.queue?.waiting||0)+' chamada(s) aguardando na fila.';document.querySelector('#pendingStatus').textContent=s.pendings?.length?'Envios presos: '+s.pendings.map(p=>p.session+' ('+p.phase+', '+p.ageS+'s'+(p.active?', em execução':'')+')').join(' · '):'Nenhum envio preso.';document.querySelector('#url').textContent=s.url||'';document.querySelector('#error').textContent=s.error||'';document.querySelector('#dot').classList.toggle('ok',s.authenticated);if(externalCdp)return;const r=await control('screenshot');const blob=await r.blob();const img=document.querySelector('#screen');if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src);img.src=URL.createObjectURL(blob);}catch(e){document.querySelector('#error').textContent=e.message;}finally{refreshing=false;}}
 document.querySelector('#screen')?.addEventListener('click',async e=>{const r=e.currentTarget.getBoundingClientRect();await control('action',{action:'click',x:(e.clientX-r.left)*e.currentTarget.naturalWidth/r.width,y:(e.clientY-r.top)*e.currentTarget.naturalHeight/r.height});});
 document.querySelector('#screen')?.addEventListener('wheel',e=>{e.preventDefault();control('action',{action:'scroll',deltaY:e.deltaY,deltaX:e.deltaX});},{passive:false});
 if(document.querySelector('#type'))document.querySelector('#type').onclick=async()=>{const field=document.querySelector('#typed');if(!field.value)return;await control('action',{action:'type',text:field.value});field.value='';};
@@ -1184,6 +1191,7 @@ document.querySelector('#clear')?.addEventListener('click',()=>control('action',
 document.querySelector('#newchat')?.addEventListener('click',async()=>{const r=await control('action',{action:'newchat'});document.querySelector('#status').textContent=(await r.json()).message;});
 document.querySelector('#openAuth')?.addEventListener('click',async()=>{try{await control('open-auth',{});document.querySelector('#status').textContent='Chromium do container ativo; conclua o login nessa janela.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
 document.querySelector('#completeLogin')?.addEventListener('click',async()=>{try{await control('complete-login',{});document.querySelector('#status').textContent='Muse autenticado no Chromium.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
+for(const [id,action,msg] of [['#clearPending','clear','Pendentes limpos: '],['#resendPending','resend','Pendentes reenviados: ']])document.querySelector(id).addEventListener('click',async()=>{try{const r=await(await control('pending',{action})).json();document.querySelector('#pendingStatus').textContent=msg+(action==='resend'?r.resent:r.released)+' sessão(ões).';}catch(e){document.querySelector('#error').textContent=e.message;}});
 document.querySelector('#copy')?.addEventListener('click',async()=>{await navigator.clipboard.writeText(config);document.querySelector('#copy').textContent='Copiado';});
 refresh();setInterval(refresh,1600);
 async function updates(){const el=document.querySelector('#updateStatus');try{const s=await(await control('update')).json();el.textContent=s.message;}catch(e){el.textContent='Não foi possível consultar atualizações: '+e.message;}}
@@ -1209,8 +1217,36 @@ async function handleControl(req, res, url) {
       request: activeRequestHash ? activeRequestHash.slice(0, 12) : null,
       queue: queue.status(),
       session: activeSessionId || null,
+      pendings: [...conversations].filter(([, c]) => c.pendingSubmission).map(([id, c]) => ({ session: id.slice(-8), phase: c.pendingSubmission.phase, ageS: Math.floor((Date.now() - c.pendingSubmission.startedAt) / 1000), active: id === activeSessionId })),
       pending: conversation.pendingSubmission ? { phase: conversation.pendingSubmission.phase, elapsedMs: Date.now() - conversation.pendingSubmission.startedAt, recovery_timeouts: conversation.pendingSubmission.recoveryTimeouts || 0 } : null,
     });
+  }
+  // Botões "Limpar pendentes" / "Reenviar pendentes": destrava sessões presas em submission_pending sem reiniciar a ponte.
+  // Nunca mexe na sessão que está executando agora. Reenviar refaz a mesma chamada (pendingBody) e deixa a resposta no cache.
+  if (url.pathname === "/control/pending" && req.method === "POST") {
+    let action;
+    try { action = JSON.parse(await readBody(req, 1000)).action; }
+    catch { return sendJson(res, 400, { error: "Requisição inválida." }); }
+    if (action !== "clear" && action !== "resend") return sendJson(res, 400, { error: "Ação desconhecida." });
+    const released = [];
+    for (const [sessionId, saved] of conversations) {
+      if (!saved.pendingSubmission || sessionId === activeSessionId) continue;
+      const body = saved.pendingBody;
+      saved.pendingSubmission = undefined;
+      if (action === "clear") delete saved.pendingBody;
+      released.push({ sessionId, body });
+    }
+    await saveConversations();
+    console.info(JSON.stringify({ event: "muse_submission", phase: `manual_${action}`, sessions: released.length }));
+    if (action === "resend") for (const { sessionId, body } of released) if (body) {
+      fetch(`http://127.0.0.1:${API_PORT}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}`, "x-opencode-session-id": sessionId },
+        body: JSON.stringify({ model: "muse-web", stream: false, ...body }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS + 30000),
+      }).catch((error) => console.warn(JSON.stringify({ event: "muse_submission", phase: "manual_resend_failed", error: error.message })));
+    }
+    return sendJson(res, 200, { released: released.length, resent: action === "resend" ? released.filter((r) => r.body).length : 0 });
   }
   if (url.pathname === "/control/open-auth" && req.method === "POST") {
     try { await readBody(req, 1000); }

@@ -150,3 +150,5 @@ Melhorias feitas a partir de falhas reais de uso longo com o OpenCode. Todas est
 Limites que continuam valendo: reenvios automáticos são no máximo 2 por chamada; a retomada após reinício não mexe em envios com mais de 30 minutos nem em envios cuja entrega ao Muse não foi confirmada; uma recusa de entrega deixa uma mensagem duplicada no histórico da thread do Muse, sem afetar as respostas.
 
 Para ajustar sem alterar código, defina as variáveis no `.env` e recrie a ponte numa pausa: `MUSE_ROTATE_CHARS`, `MUSE_ROTATE_TURNS`, `MUSE_STALL_MS`.
+
+**Sessão presa em `submission_pending` por horas.** Guardrail: envio pendente com mais de `MUSE_PENDING_MAX_MS` (600000 = 10 min) é solto sozinho ao chegar nova mensagem. O painel tem os botões "Limpar pendentes" e "Reenviar pendentes" (nunca mexem na sessão em execução) e lista os envios presos Logs: `released_stale`, `manual_clear`, `manual_resend`.
