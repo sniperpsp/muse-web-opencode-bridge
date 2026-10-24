@@ -7,6 +7,9 @@ services:
     environment:
       MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-60000}
       MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-180000}
+      MUSE_MAX_TABS: ${MUSE_MAX_TABS:-1}
+      MUSE_ROTATE_TURNS: ${MUSE_ROTATE_TURNS:-40}
+      MUSE_ROTATE_CHARS: ${MUSE_ROTATE_CHARS:-300000}
     image: muse-opencode-bridge:local
     container_name: muse-opencode-bridge
     init: true

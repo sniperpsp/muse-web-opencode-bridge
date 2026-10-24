@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile, chmod, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -47,7 +48,22 @@ const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
 let apiKey;
 let browser;
 let context;
-let musePage;
+let primaryPage;
+const pool = [];
+const als = new AsyncLocalStorage();
+const curPage = () => als.getStore()?.page ?? primaryPage;
+const MAX_TABS = Math.max(1, Math.min(8, Number(process.env.MUSE_MAX_TABS || 1)));
+const idleConversation = {};
+const conversation = new Proxy({}, {
+  get: (_, key) => (als.getStore()?.conversation ?? idleConversation)[key],
+  set: (_, key, value) => { (als.getStore()?.conversation ?? idleConversation)[key] = value; return true; },
+  deleteProperty: (_, key) => delete (als.getStore()?.conversation ?? idleConversation)[key],
+  has: (_, key) => key in (als.getStore()?.conversation ?? idleConversation),
+  ownKeys: () => Reflect.ownKeys(als.getStore()?.conversation ?? idleConversation),
+  getOwnPropertyDescriptor: (_, key) => ({ ...Object.getOwnPropertyDescriptor(als.getStore()?.conversation ?? idleConversation, key), configurable: true }),
+});
+const setConversation = (value) => { als.getStore().conversation = value; };
+const activeRuns = new Map();
 let obscuraProcess;
 let authChromiumProcess;
 let reconnectTimer;
@@ -56,10 +72,26 @@ let browserState = "Iniciando navegador…";
 let browserError = "";
 let museAuthenticated = false;
 let conversations = new Map();
-let conversation = {};
-let activeSessionId = "";
-let activeRequestHash = "";
-const queue = createRequestQueue();
+const queue = createRequestQueue({ concurrency: MAX_TABS });
+
+function newConversation(sessionId) {
+  const created = { previousMessages: [], previousRequestHash: "" };
+  conversations.set(sessionId, created);
+  return created;
+}
+
+// Slot 0 é a aba principal; os demais abrem sob demanda no mesmo contexto (mesmo login) e são recriados se fecharem ou se o navegador reconectar.
+async function slotPage(slot) {
+  if (!slot) return primaryPage;
+  let tab = pool[slot];
+  if (!tab || tab.isClosed() || tab.context() !== context) {
+    tab = await context.newPage();
+    tab.setDefaultTimeout(BROWSER_OPERATION_TIMEOUT_MS);
+    await tab.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    pool[slot] = tab;
+  }
+  return tab;
+}
 const controlToken = randomBytes(32).toString("hex");
 
 for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CDP_PORT], ["MUSE_AUTH_CDP_PORT", AUTH_CDP_PORT]]) {
@@ -100,7 +132,7 @@ async function waitForBrowserReconnect(signal) {
   const deadline = Date.now() + BROWSER_OPERATION_TIMEOUT_MS;
   while (Date.now() < deadline) {
     signal.throwIfAborted();
-    if (browser?.isConnected() && musePage && !musePage.isClosed()) return;
+    if (browser?.isConnected() && curPage() && !curPage().isClosed()) return;
     await sleep(250);
   }
   throw Object.assign(new Error("O Chromium ainda está reconectando. Repita a mesma solicitação para retomar a leitura sem reenviar a mensagem."), {
@@ -184,6 +216,9 @@ async function spawnAuthChromium() {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-dev-shm-usage",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--start-maximized",
     MUSE_URL,
   ], { stdio: "ignore" });
@@ -240,21 +275,23 @@ async function saveSessionState(state) {
   }
 }
 
-async function saveConversations() {
-  const temporary = `${CONVERSATIONS_FILE}.tmp`;
-  await writeFile(temporary, JSON.stringify(Object.fromEntries(conversations)), { mode: 0o600 });
-  await rename(temporary, CONVERSATIONS_FILE);
+// Gravações em fila: com várias abas, duas chamadas simultâneas não podem disputar o mesmo arquivo temporário.
+let saving = Promise.resolve();
+function saveConversations() {
+  const write = async () => {
+    const temporary = `${CONVERSATIONS_FILE}.tmp`;
+    await writeFile(temporary, JSON.stringify(Object.fromEntries(conversations)), { mode: 0o600 });
+    await rename(temporary, CONVERSATIONS_FILE);
+  };
+  saving = saving.then(write, write);
+  return saving;
 }
 
 async function selectConversation(sessionId, signal) {
-  conversation = conversations.get(sessionId);
-  if (!conversation) {
-    conversation = { previousMessages: [], previousRequestHash: "" };
-    conversations.set(sessionId, conversation);
-  }
+  setConversation(conversations.get(sessionId) ?? newConversation(sessionId));
   if (conversation.url) {
-    if (musePage.url() !== conversation.url) {
-      await museBrowserOperation(() => musePage.goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Abrir a conversa do Muse");
+    if (curPage().url() !== conversation.url) {
+      await museBrowserOperation(() => curPage().goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Abrir a conversa do Muse");
       await findComposer(signal);
     }
   } else {
@@ -265,7 +302,7 @@ async function selectConversation(sessionId, signal) {
 }
 
 async function rememberThread() {
-  const url = new URL(musePage.url());
+  const url = new URL(curPage().url());
   if (url.origin === new URL(MUSE_URL).origin && /^\/thread\/(?!new$)[a-zA-Z0-9-]+$/.test(url.pathname) && conversation.url !== url.href) {
     conversation.url = url.href;
     await saveConversations();
@@ -360,12 +397,12 @@ async function openMuseBrowser() {
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
     const museOrigin = new URL(MUSE_URL).origin;
-    musePage = context.pages().find((page) => {
+    primaryPage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
       catch { return false; }
     }) || await context.newPage();
-    if (new URL(musePage.url()).origin !== museOrigin) {
-      await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    if (new URL(primaryPage.url()).origin !== museOrigin) {
+      await primaryPage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
     }
   } else if (MANAGED_AUTH_BROWSER) {
     browserState = "Conectando ao Chromium do Docker…";
@@ -377,11 +414,11 @@ async function openMuseBrowser() {
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
     const museOrigin = new URL(MUSE_URL).origin;
-    musePage = context.pages().find((page) => {
+    primaryPage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
       catch { return false; }
     }) || await context.newPage();
-    if (!musePage.url().startsWith(museOrigin)) await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    if (!primaryPage.url().startsWith(museOrigin)) await primaryPage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
   } else {
     await mkdir(PROFILE_DIR, { recursive: true, mode: 0o700 });
     await chmod(APP_DIR, 0o700).catch(() => {});
@@ -410,10 +447,10 @@ async function openMuseBrowser() {
     watchPrimaryBrowser(browser);
     const state = await readSavedSession();
     context = await browser.newContext(state ? { storageState: state } : {});
-    musePage = await context.newPage();
-    await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+    primaryPage = await context.newPage();
+    await primaryPage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
   }
-  musePage.setDefaultTimeout(BROWSER_OPERATION_TIMEOUT_MS);
+  primaryPage.setDefaultTimeout(BROWSER_OPERATION_TIMEOUT_MS);
   museAuthenticated = await isMuseAuthenticated();
   if (museAuthenticated) {
     browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
@@ -430,7 +467,8 @@ function watchPrimaryBrowser(connectedBrowser) {
     if (browser !== connectedBrowser || shuttingDown) return;
     browser = undefined;
     context = undefined;
-    musePage = undefined;
+    primaryPage = undefined;
+    pool.length = 0;
     museAuthenticated = false;
     browserState = "Conexão com navegador encerrada";
     browserError = "Aguarde a reconexão do navegador local.";
@@ -439,13 +477,13 @@ function watchPrimaryBrowser(connectedBrowser) {
 }
 
 async function findComposer(signal, retriedSite = false) {
-  if (!musePage) throw new Error("O navegador ainda está iniciando. Atualize o painel em alguns segundos.");
+  if (!curPage()) throw new Error("O navegador ainda está iniciando. Atualize o painel em alguns segundos.");
   if (process.env.MUSE_COMPOSER_SELECTOR) {
-    const custom = musePage.locator(process.env.MUSE_COMPOSER_SELECTOR).last();
+    const custom = curPage().locator(process.env.MUSE_COMPOSER_SELECTOR).last();
     try { await museBrowserOperation(() => custom.waitFor({ state: "visible", timeout: 10000 }), signal, "Localizar a caixa de mensagem"); return custom; }
     catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
   }
-  const preferred = musePage.locator([
+  const preferred = curPage().locator([
     'textarea[placeholder*="mensagem" i]', 'textarea[placeholder*="message" i]',
     'textarea[aria-label*="mensagem" i]', 'textarea[aria-label*="message" i]',
     '[contenteditable="true"][aria-label*="mensagem" i]', '[contenteditable="true"][aria-label*="message" i]',
@@ -453,7 +491,7 @@ async function findComposer(signal, retriedSite = false) {
   ].join(", ")).last();
   try { await museBrowserOperation(() => preferred.waitFor({ state: "visible", timeout: 10000 }), signal, "Localizar a caixa de mensagem"); return preferred; }
   catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
-  const generic = musePage.locator('textarea, [contenteditable="true"], [role="textbox"]').last();
+  const generic = curPage().locator('textarea, [contenteditable="true"], [role="textbox"]').last();
   try { await museBrowserOperation(() => generic.waitFor({ state: "visible", timeout: 5000 }), signal, "Localizar a caixa de mensagem"); return generic; }
   catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
   if (!retriedSite && await clickSiteTryAgain(signal)) {
@@ -465,7 +503,7 @@ async function findComposer(signal, retriedSite = false) {
 
 // O Muse mostra "Try again" quando a conversa não foi verificada ou a entrega falhou; clicar costuma destravar a caixa de mensagem.
 async function clickSiteTryAgain(signal) {
-  const buttons = musePage.getByRole("button", { name: /^(try again|tentar novamente)$/i });
+  const buttons = curPage().getByRole("button", { name: /^(try again|tentar novamente)$/i });
   let clicked = 0;
   for (let i = await museBrowserOperation(() => buttons.count(), signal, "Procurar o botão Try again"); i > 0; i--) {
     const button = buttons.nth(i - 1);
@@ -479,11 +517,11 @@ async function clickSiteTryAgain(signal) {
 }
 
 async function museThreadBroken(signal) {
-  return museBrowserOperation(() => musePage.evaluate(() => /conversation controls unavailable|something went wrong/i.test(document.body.innerText)), signal, "Verificar se a conversa quebrou").catch(() => false);
+  return museBrowserOperation(() => curPage().evaluate(() => /conversation controls unavailable|something went wrong/i.test(document.body.innerText)), signal, "Verificar se a conversa quebrou").catch(() => false);
 }
 
 async function museReadinessError(signal) {
-  const login = await museBrowserOperation(() => musePage?.evaluate(() => {
+  const login = await museBrowserOperation(() => curPage()?.evaluate(() => {
     const fields = document.querySelectorAll('input[type="email"], input[type="password"], input[autocomplete="username"], input[autocomplete="one-time-code"], input[placeholder*="email" i], input[placeholder*="e-mail" i]');
     const visible = [...fields].some((field) => field.getBoundingClientRect().width && field.getBoundingClientRect().height);
     return visible && /log in|sign in|log into|entrar|iniciar sess[aã]o|c[oó]digo de (?:login|verifica)|verification code|login code/i.test(document.body.innerText);
@@ -501,7 +539,7 @@ async function museReadinessError(signal) {
 async function requireMuseReady(signal) {
   signal.throwIfAborted();
   for (let attempt = 0; attempt < 2; attempt++) {
-    const authenticated = await isMuseAuthenticated(musePage, signal);
+    const authenticated = await isMuseAuthenticated(curPage(), signal);
     signal.throwIfAborted();
     if (authenticated) { museAuthenticated = true; return; }
     if (!attempt) await sleep(750);
@@ -512,7 +550,7 @@ async function requireMuseReady(signal) {
   throw error;
 }
 
-async function isMuseAuthenticated(page = musePage, signal) {
+async function isMuseAuthenticated(page = curPage(), signal) {
   try {
     if (!page) return false;
     if (process.env.MUSE_COMPOSER_SELECTOR) {
@@ -538,30 +576,30 @@ async function isMuseAuthenticated(page = musePage, signal) {
 }
 
 async function startNewChat(signal) {
-  if (!musePage) throw new Error("O navegador ainda não está conectado.");
-  await museBrowserOperation(() => musePage.goto(process.env.MUSE_NEW_CHAT_URL || new URL("/thread/new", MUSE_URL).href, {
+  if (!curPage()) throw new Error("O navegador ainda não está conectado.");
+  await museBrowserOperation(() => curPage().goto(process.env.MUSE_NEW_CHAT_URL || new URL("/thread/new", MUSE_URL).href, {
     waitUntil: "domcontentloaded", timeout: 90000,
   }), signal, "Iniciar conversa no Muse");
   await findComposer(signal);
-  await museBrowserOperation(() => musePage.waitForFunction(() => !document.querySelector('[class*="group/msg"]'), null, { timeout: 15000 }), signal, "Aguardar a conversa nova");
+  await museBrowserOperation(() => curPage().waitForFunction(() => !document.querySelector('[class*="group/msg"]'), null, { timeout: 15000 }), signal, "Aguardar a conversa nova");
   return true;
 }
 
 async function uploadFiles(files, signal) {
   if (!files.length) return;
-  let inputs = musePage.locator('input[type="file"]');
+  let inputs = curPage().locator('input[type="file"]');
   if (!(await museBrowserOperation(() => inputs.count(), signal, "Localizar o seletor de anexos"))) {
     if (process.env.MUSE_ATTACH_SELECTOR) {
-      const button = musePage.locator(process.env.MUSE_ATTACH_SELECTOR).last();
-      const chooserWait = musePage.waitForEvent("filechooser", { timeout: 5000 });
+      const button = curPage().locator(process.env.MUSE_ATTACH_SELECTOR).last();
+      const chooserWait = curPage().waitForEvent("filechooser", { timeout: 5000 });
       await museBrowserOperation(() => button.click(), signal, "Abrir o seletor de arquivos");
       const chooser = await chooserWait;
       await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao Muse");
       return;
     }
-    const attach = musePage.getByRole("button", { name: /anexar|arquivo|imagem|áudio|audio|attach|upload|file/i }).last();
+    const attach = curPage().getByRole("button", { name: /anexar|arquivo|imagem|áudio|audio|attach|upload|file/i }).last();
     if (await museBrowserOperation(() => attach.count(), signal, "Localizar o botão de anexos")) {
-      const chooserWait = musePage.waitForEvent("filechooser", { timeout: 5000 });
+      const chooserWait = curPage().waitForEvent("filechooser", { timeout: 5000 });
       await museBrowserOperation(() => attach.click(), signal, "Abrir o seletor de arquivos");
       const chooser = await chooserWait;
       await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao Muse");
@@ -580,7 +618,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await museBrowserOperation(() => composer.evaluate((element) => element.maxLength), signal, "Verificar o limite do campo");
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files, signal);
-    const beforeMessageIds = await museBrowserOperation(() => musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-message-id"))), signal, "Identificar as mensagens anteriores");
+    const beforeMessageIds = await museBrowserOperation(() => curPage().locator('[data-message-id][data-message-role]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-message-id"))), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
     if (prompt) await museBrowserOperation(() => composer.fill(prompt), signal, "Escrever a mensagem no Muse");
     signal.throwIfAborted();
@@ -588,10 +626,10 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     await saveConversations();
 
     if (process.env.MUSE_SEND_SELECTOR) {
-      await museBrowserOperation(() => musePage.locator(process.env.MUSE_SEND_SELECTOR).last().click(), signal, "Enviar a mensagem ao Muse");
+      await museBrowserOperation(() => curPage().locator(process.env.MUSE_SEND_SELECTOR).last().click(), signal, "Enviar a mensagem ao Muse");
     } else {
       const sent = await museBrowserOperation(async () => {
-        const send = musePage.getByRole("button", { name: /enviar|send|mandar|submit/i }).last();
+        const send = curPage().getByRole("button", { name: /enviar|send|mandar|submit/i }).last();
         if (await send.count() && await send.isVisible() && await send.isEnabled()) {
           await send.click();
           return true;
@@ -610,7 +648,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
         throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do Muse. Configure MUSE_SEND_SELECTOR para o botão desta página.");
       }
     }
-    await museBrowserOperation(() => musePage.waitForURL((url) => /^\/thread\/(?!new$)[a-zA-Z0-9-]+$/.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio ao Muse");
+    await museBrowserOperation(() => curPage().waitForURL((url) => /^\/thread\/(?!new$)[a-zA-Z0-9-]+$/.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio ao Muse");
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
@@ -630,7 +668,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
   while (true) {
     try {
       signal.throwIfAborted();
-      if (!musePage || !browser || browser.isConnected?.() === false) {
+      if (!curPage() || !browser || browser.isConnected?.() === false) {
         throw Object.assign(new Error(browserError || "O Chromium ainda está reconectando. Repita a mesma solicitação para retomar a leitura."), {
           status: 503, code: "muse_browser_reconnecting", retryable: true,
         });
@@ -640,8 +678,8 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
         if (readyError.code !== "muse_page_not_ready" || !(await museThreadBroken(signal))) throw readyError;
         // A página ficou presa numa thread quebrada: tenta o Try again do Muse e, se persistir, sai dela para a página inicial.
         if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
-          console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: musePage.url() }));
-          await museBrowserOperation(() => musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
+          console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: curPage().url() }));
+          await museBrowserOperation(() => curPage().goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
         }
         await requireMuseReady(signal);
       }
@@ -678,7 +716,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
 
 async function readChatMessages(beforeMessageIds, signal) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || "[data-hatch-assistant-message-body]";
-  return museBrowserOperation(() => musePage.locator('[data-message-id][data-message-role]').evaluateAll((groups, { selector, beforeMessageIds }) => {
+  return museBrowserOperation(() => curPage().locator('[data-message-id][data-message-role]').evaluateAll((groups, { selector, beforeMessageIds }) => {
     const previous = new Set(beforeMessageIds);
     return groups.filter((group) => !previous.has(group.getAttribute("data-message-id"))).map((group) => {
     const role = group.getAttribute("data-message-role");
@@ -770,9 +808,9 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
 }
 
 async function readMediaSources(signal) {
-  if (!musePage) return [];
+  if (!curPage()) return [];
   try {
-    return await museBrowserOperation(() => musePage.locator("main img, main audio, main video, main a[download]").evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do Muse");
+    return await museBrowserOperation(() => curPage().locator("main img, main audio, main video, main a[download]").evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do Muse");
   } catch (error) {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return [];
@@ -781,9 +819,9 @@ async function readMediaSources(signal) {
 
 async function collectNewMedia(beforeSources, signal) {
   const attachments = [];
-  if (!musePage) return attachments;
+  if (!curPage()) return attachments;
   try {
-    const nodes = await museBrowserOperation(() => musePage.locator("main img, main audio, main video, main a[download]").evaluateAll((elements) => elements.map((node) => ({
+    const nodes = await museBrowserOperation(() => curPage().locator("main img, main audio, main video, main a[download]").evaluateAll((elements) => elements.map((node) => ({
       url: node.currentSrc || node.src || node.href || "",
       name: node.getAttribute("download") || node.getAttribute("alt") || node.getAttribute("aria-label") || "",
       mimeType: node.tagName === "IMG" ? "image/*" : node.tagName === "AUDIO" ? "audio/*" : node.tagName === "VIDEO" ? "video/*" : "application/octet-stream",
@@ -799,8 +837,8 @@ async function collectNewMedia(beforeSources, signal) {
           mimeType = match[1] || mimeType;
           buffer = Buffer.from(match[2], "base64");
         } else {
-          const url = new URL(item.url, musePage.url());
-          if (url.origin !== new URL(musePage.url()).origin) continue;
+          const url = new URL(item.url, curPage().url());
+          if (url.origin !== new URL(curPage().url()).origin) continue;
           const result = await context.request.get(url.toString(), { timeout: 8000 });
           if (!result.ok()) continue;
           const contentType = result.headers()["content-type"]?.split(";")[0];
@@ -1031,18 +1069,14 @@ async function handleCompletion(req, res) {
   let signal = disconnected.signal;
   let executionDeadline;
   try {
-    const completion = await queue.run(async (queueWaitMs) => {
+    const completion = await queue.run(async (queueWaitMs, slot) => {
       executionDeadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       // Once active, finish and cache the same request even if OpenCode drops its HTTP connection.
       signal = executionDeadline;
       signal.throwIfAborted();
-      activeRequestHash = requestHash;
-      activeSessionId = sessionId;
-      conversation = conversations.get(sessionId);
-      if (!conversation) {
-        conversation = { previousMessages: [], previousRequestHash: "" };
-        conversations.set(sessionId, conversation);
-      }
+      return als.run({ page: await slotPage(slot) }, async () => {
+      activeRuns.set(sessionId, requestHash);
+      setConversation(conversations.get(sessionId) ?? newConversation(sessionId));
       // Guardado com o envio pendente: se o serviço reiniciar, a ponte refaz a chamada sozinha (resumePending).
       if (!conversation.pendingSubmission) conversation.pendingBody = { messages: body.messages, tools: body.tools, tool_choice: body.tool_choice };
       try {
@@ -1122,9 +1156,9 @@ async function handleCompletion(req, res) {
         }
         throw error;
       } finally {
-        activeRequestHash = "";
-        activeSessionId = "";
+        activeRuns.delete(sessionId);
       }
+      });
     }, { sessionId, signal: disconnected.signal });
     if (res.destroyed || res.writableEnded) return;
     if (body.stream) sendSse(res, completion);
@@ -1203,7 +1237,7 @@ async function handleControl(req, res, url) {
   if (!controlAuthorized(req)) return sendJson(res, 403, { error: "Acesso local negado." });
   if (url.pathname === "/control/update" && req.method === "GET") return sendJson(res, 200, await checkUpdate());
   if (url.pathname === "/control/status" && req.method === "GET") {
-    if (musePage && !musePage.isClosed() && browser?.isConnected()) {
+    if (curPage() && !curPage().isClosed() && browser?.isConnected()) {
       const authenticated = await isMuseAuthenticated();
       if (authenticated && !museAuthenticated) browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
       if (!authenticated) browserState = (await museReadinessError()).status === 401
@@ -1212,12 +1246,12 @@ async function handleControl(req, res, url) {
       museAuthenticated = authenticated;
     }
     return sendJson(res, 200, {
-      ready: Boolean(musePage && !musePage.isClosed() && browser?.isConnected()), authenticated: museAuthenticated,
-      state: browserState, error: browserError, url: musePage?.url() || "",
-      request: activeRequestHash ? activeRequestHash.slice(0, 12) : null,
+      ready: Boolean(curPage() && !curPage().isClosed() && browser?.isConnected()), authenticated: museAuthenticated,
+      state: browserState, error: browserError, url: curPage()?.url() || "",
+      request: [...activeRuns.values()][0]?.slice(0, 12) ?? null,
       queue: queue.status(),
-      session: activeSessionId || null,
-      pendings: [...conversations].filter(([, c]) => c.pendingSubmission).map(([id, c]) => ({ session: id.slice(-8), phase: c.pendingSubmission.phase, ageS: Math.floor((Date.now() - c.pendingSubmission.startedAt) / 1000), active: id === activeSessionId })),
+      session: [...activeRuns.keys()][0] || null,
+      pendings: [...conversations].filter(([, c]) => c.pendingSubmission).map(([id, c]) => ({ session: id.slice(-8), phase: c.pendingSubmission.phase, ageS: Math.floor((Date.now() - c.pendingSubmission.startedAt) / 1000), active: activeRuns.has(id) })),
       pending: conversation.pendingSubmission ? { phase: conversation.pendingSubmission.phase, elapsedMs: Date.now() - conversation.pendingSubmission.startedAt, recovery_timeouts: conversation.pendingSubmission.recoveryTimeouts || 0 } : null,
     });
   }
@@ -1230,7 +1264,7 @@ async function handleControl(req, res, url) {
     if (action !== "clear" && action !== "resend") return sendJson(res, 400, { error: "Ação desconhecida." });
     const released = [];
     for (const [sessionId, saved] of conversations) {
-      if (!saved.pendingSubmission || sessionId === activeSessionId) continue;
+      if (!saved.pendingSubmission || activeRuns.has(sessionId)) continue;
       const body = saved.pendingBody;
       saved.pendingSubmission = undefined;
       if (action === "clear") delete saved.pendingBody;
@@ -1261,7 +1295,7 @@ async function handleControl(req, res, url) {
   if (url.pathname === "/control/complete-login" && req.method === "POST") {
     try { await readBody(req, 1000); }
     catch { return sendJson(res, 400, { error: "Requisição inválida." }); }
-    if (!musePage || musePage.isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
+    if (!curPage() || curPage().isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
     if (!await isMuseAuthenticated()) return sendJson(res, 409, { error: "Ainda não detectei a caixa Message do Muse. Termine o login no Chromium e tente de novo." });
     museAuthenticated = true;
     browserState = MANAGED_AUTH_BROWSER ? "Muse autenticado no Chromium do Docker" : "Muse autenticado no Obscura";
@@ -1273,39 +1307,39 @@ async function handleControl(req, res, url) {
     return sendJson(res, 200, { authenticated: true });
   }
   if (url.pathname === "/control/screenshot" && req.method === "GET") {
-    if (!musePage || musePage.isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
+    if (!curPage() || curPage().isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
     try {
-      const image = await musePage.screenshot({ type: "jpeg", quality: 55, timeout: 8000 });
+      const image = await curPage().screenshot({ type: "jpeg", quality: 55, timeout: 8000 });
       res.writeHead(200, { "content-type": "image/jpeg", "content-length": image.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
       return res.end(image);
     } catch (error) { return sendJson(res, 503, { error: error.message }); }
   }
   if (url.pathname === "/control/action" && req.method === "POST") {
-    if (activeRequestHash) return sendJson(res, 409, { error: "A API está usando esta conversa. Aguarde a resposta ou cancele a chamada no OpenCode antes de controlar a página." });
+    if (activeRuns.size) return sendJson(res, 409, { error: "A API está usando esta conversa. Aguarde a resposta ou cancele a chamada no OpenCode antes de controlar a página." });
     let action;
     try { action = JSON.parse(await readBody(req, 100000)); }
     catch { return sendJson(res, 400, { error: "JSON inválido." }); }
-    if (!musePage || musePage.isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
+    if (!curPage() || curPage().isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
     try {
       if (action.action === "click") {
         const x = Number(action.x), y = Number(action.y);
-        const size = musePage.viewportSize() || await musePage.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+        const size = curPage().viewportSize() || await curPage().evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
         if (!Number.isFinite(size?.width) || !Number.isFinite(size?.height) || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= size.width || y >= size.height) return sendJson(res, 400, { error: "Coordenadas inválidas." });
-        await musePage.mouse.click(x, y);
+        await curPage().mouse.click(x, y);
       } else if (action.action === "type") {
         if (typeof action.text !== "string" || action.text.length > 10000) return sendJson(res, 400, { error: "Texto inválido ou longo demais." });
-        await musePage.keyboard.insertText(action.text);
+        await curPage().keyboard.insertText(action.text);
       } else if (action.action === "clear") {
-        await musePage.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-        await musePage.keyboard.press("Backspace");
+        await curPage().keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+        await curPage().keyboard.press("Backspace");
       } else if (action.action === "key") {
         const allowed = new Set(["Enter", "Tab", "Escape", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
         if (!allowed.has(action.key)) return sendJson(res, 400, { error: "Tecla não permitida." });
-        await musePage.keyboard.press(action.key);
+        await curPage().keyboard.press(action.key);
       } else if (action.action === "scroll") {
         const x = Math.max(-1000, Math.min(1000, Number(action.deltaX) || 0));
         const y = Math.max(-1000, Math.min(1000, Number(action.deltaY) || 0));
-        await musePage.mouse.wheel(x, y);
+        await curPage().mouse.wheel(x, y);
       } else if (action.action === "newchat") {
         const opened = await startNewChat();
         return sendJson(res, 200, { message: opened ? "Nova conversa aberta." : "Não localizei o botão de nova conversa; use o próprio Muse na imagem." });

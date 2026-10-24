@@ -63,3 +63,20 @@ test("queue timeout rejects while the active job is still running", async () => 
   held.release();
   await first;
 });
+
+test("queue runs up to `concurrency` calls in parallel in distinct slots", async () => {
+  const queue = createRequestQueue({ concurrency: 2 });
+  const held = gate();
+  const slots = [];
+  const a = queue.run((_, slot) => { slots.push(slot); return held.promise; }, { sessionId: "a" });
+  const b = queue.run((_, slot) => { slots.push(slot); return held.promise; }, { sessionId: "b" });
+  const c = queue.run(() => "c", { sessionId: "c" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(slots.sort(), [0, 1]);
+  assert.equal(queue.status().waiting, 1);
+  await assert.rejects(queue.run(() => 0, { sessionId: "b" }), (e) => e.code === "session_busy");
+  held.release();
+  await Promise.all([a, b]);
+  assert.equal(await c, "c");
+});
