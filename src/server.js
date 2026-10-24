@@ -755,6 +755,12 @@ async function releaseUndeliveredPending(sessionId, signal) {
   }
 }
 
+function isCompleteReply(text) {
+  if (/^<opencode_tool_call>[\s\S]*<<<MUSE_FILE_CONTENT_END>>>\s*<\/opencode_tool_call>$/i.test(text)) return true;
+  try { return typeof JSON.parse(text.replace(/^```json\s*|\s*```$/g, "")) === "object"; }
+  catch { return false; }
+}
+
 async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
   const started = Date.now();
   let lastText = "";
@@ -793,9 +799,14 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
       if (candidate !== lastText) {
         lastText = candidate;
         changedAt = Date.now();
-      } else if ((!reply.busy && Date.now() - changedAt >= 1800) || Date.now() - changedAt >= STALL_MS) {
-        // O Muse às vezes não marca a resposta como concluída; texto parado por STALL_MS é tratado como final.
-        return candidate;
+      } else {
+        const idle = Date.now() - changedAt;
+        // O Muse às vezes não marca a resposta como concluída (sem o botão Copy); um bloco JSON/ferramenta completo e parado por 2,5s já é final.
+        const via = !reply.busy && idle >= 1800 ? "idle" : isCompleteReply(candidate) && idle >= 2500 ? "complete" : idle >= STALL_MS ? "stall" : "";
+        if (via) {
+          console.info(JSON.stringify({ event: "muse_submission", phase: "settled", via, waitedMs: Date.now() - started, idleMs: idle }));
+          return candidate;
+        }
       }
     } else if (reply && !reply.busy && hasNewMedia) {
       if (!changedAt) changedAt = Date.now();
