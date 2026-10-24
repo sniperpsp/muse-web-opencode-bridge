@@ -779,7 +779,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
 async function readMediaSources(signal) {
   if (!musePage) return [];
   try {
-    return await museBrowserOperation(() => musePage.locator("main img, main audio, main video, main a[download]").evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do ChatGPT");
+    return await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do ChatGPT");
   } catch (error) {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return [];
@@ -790,7 +790,7 @@ async function collectNewMedia(beforeSources, signal) {
   const attachments = [];
   if (!musePage) return attachments;
   try {
-    const nodes = await museBrowserOperation(() => musePage.locator("main img, main audio, main video, main a[download]").evaluateAll((elements) => elements.map((node) => ({
+    const nodes = await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((elements) => elements.map((node) => ({
       url: node.currentSrc || node.src || node.href || "",
       name: node.getAttribute("download") || node.getAttribute("alt") || node.getAttribute("aria-label") || "",
       mimeType: node.tagName === "IMG" ? "image/*" : node.tagName === "AUDIO" ? "audio/*" : node.tagName === "VIDEO" ? "video/*" : "application/octet-stream",
