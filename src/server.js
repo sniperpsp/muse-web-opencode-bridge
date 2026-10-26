@@ -1385,7 +1385,11 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
     return res.end(html);
   }
-  if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
+  if (url.pathname.startsWith("/control/")) {
+    // Falha no navegador durante o painel não pode derrubar o processo (antes: rejeição não tratada reiniciava o container).
+    try { return await handleControl(req, res, url); }
+    catch (error) { return sendJson(res, error.status || 503, { error: error.message || "Falha no painel." }); }
+  }
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
     return sendJson(res, 200, { object: "list", data: [{ id: "muse-web", object: "model", created: 0, owned_by: "muse-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: REQUEST_TIMEOUT_MS / 1000, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
