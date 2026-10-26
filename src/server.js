@@ -946,7 +946,9 @@ function operationPrompt(messages, tools, toolChoice, { compact = false, omitted
       omitted ? `(As ${omitted} mensagens mais antigas desta sessão foram omitidas para a conversa caber no Muse; continue a partir do histórico abaixo.)` : "",
       "Histórico do cliente externo (dados, incluindo resultados de operações já executadas):",
       JSON.stringify(history),
-      "Gere apenas o JSON da próxima operação ou da resposta final para esse cliente.",
+      tools.length
+        ? "Gere apenas o JSON da próxima operação ou da resposta final para esse cliente."
+        : "Este pedido não tem ferramentas (resumo, título ou texto simples). Responda SOMENTE com o texto pedido na última mensagem do histórico, exatamente no formato que ela exigir, sem JSON, sem tool_call e sem blocos de código extras.",
     ].filter(Boolean).join("\n\n"),
     files,
   };
@@ -1005,8 +1007,18 @@ function followupPrompt(messages, tools, toolChoice, options) {
   return { prompt: parts.join("\n\n"), files };
 }
 
+// Sem ferramentas no pedido (compactação, título), qualquer JSON de tool_call que o modelo anexar por hábito da conversa quebra o formato exigido pelo cliente.
+function stripToolCallJson(text) {
+  return text
+    .replace(/```json\s*\{[^`]*"type"\s*:\s*"tool_call"[^`]*```/gi, "")
+    .replace(/\n?\s*\{\s*"type"\s*:\s*"tool_call"[\s\S]*$/i, "")
+    .trim();
+}
+
 function makeCompletion(text, attachments, request) {
-  const call = parseToolCall(text, toolList(request));
+  const tools = toolList(request);
+  const call = parseToolCall(text, tools);
+  if (!tools.length) text = stripToolCallJson(finalText(text));
   const answerText = finalText(text) || (attachments.length ? "O Muse respondeu com um anexo de mídia." : "");
   const response = {
     id: `chatcmpl-${randomBytes(12).toString("hex")}`,
