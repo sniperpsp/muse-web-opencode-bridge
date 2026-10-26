@@ -82,6 +82,9 @@ function newConversation(sessionId) {
 
 // Slot 0 é a aba principal; os demais abrem sob demanda no mesmo contexto (mesmo login) e são recriados se fecharem ou se o navegador reconectar.
 async function slotPage(slot) {
+  if (!context || !primaryPage) {
+    throw Object.assign(new Error("O navegador do Muse ainda está iniciando ou reconectando. Repita a mesma solicitação em alguns segundos."), { status: 503, code: "muse_browser_reconnecting", retryable: true });
+  }
   if (!slot) return primaryPage;
   let tab = pool[slot];
   if (!tab || tab.isClosed() || tab.context() !== context) {
