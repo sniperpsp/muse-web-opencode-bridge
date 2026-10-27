@@ -134,6 +134,22 @@ export function transcriptDelta(before, after, prompt) {
   return tail.trim();
 }
 
+// Quebras de linha/tabs crus dentro de strings JSON (comuns quando o Muse renderiza o bloco) são válidos para o modelo mas não para JSON.parse.
+function parseLenient(raw) {
+  try { return JSON.parse(raw); } catch {}
+  let out = "", inString = false, escaped = false;
+  for (const ch of raw) {
+    if (inString && !escaped && ch === "\n") out += "\\n";
+    else if (inString && !escaped && ch === "\r") out += "\\r";
+    else if (inString && !escaped && ch === "\t") out += "\\t";
+    else out += ch;
+    if (escaped) escaped = false;
+    else if (ch === "\\" && inString) escaped = true;
+    else if (ch === '"') inString = !inString;
+  }
+  return JSON.parse(out);
+}
+
 export function parseToolCall(text, tools = []) {
   const rawContent = /^<opencode_tool_call>\s*(\{[^\r\n]*\})\r?\n<<<MUSE_FILE_CONTENT_BEGIN>>>\r?\n([\s\S]*?)<<<MUSE_FILE_CONTENT_END>>>\s*<\/opencode_tool_call>$/i.exec(text.trim());
   if (rawContent) {
@@ -153,7 +169,7 @@ export function parseToolCall(text, tools = []) {
   }
   const match = /<opencode_tool_call>\s*([\s\S]*?)\s*<\/opencode_tool_call>/i.exec(text);
   try {
-    const call = JSON.parse(match ? match[1] : responseJson(text));
+    const call = parseLenient(match ? match[1] : responseJson(text));
     if (!match && call?.type !== "tool_call") return null;
     if (!call || typeof call !== "object") return null;
     if (typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) return null;

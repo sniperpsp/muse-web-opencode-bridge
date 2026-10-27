@@ -1211,6 +1211,7 @@ async function handleCompletion(req, res) {
         answer = await submitWithRecovery(sessionId, retryPrompt, [], requestHash, signal, 1);
         result = makeCompletion(answer.text, answer.attachments, body);
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
+          console.warn(JSON.stringify({ event: "tool_call_unparsed", session: sessionId.slice(-8), chars: answer.text.length, head: answer.text.slice(0, 300), tail: answer.text.slice(-200) }));
           result = makeCompletion("A última operação do Muse veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }

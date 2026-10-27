@@ -351,3 +351,9 @@ test("currentReply prefers rendered markdown when the page provides it", () => {
   assert.equal(reply.markdown, "## Objective\n- item");
   assert.equal(reply.text, "Objective\nitem");
 });
+
+test("parseToolCall accepts raw newlines inside JSON strings", () => {
+  const tools = [{ type: "function", function: { name: "bash" } }];
+  const text = '```json\n{"type":"tool_call","name":"bash","arguments":{"command":"echo a\necho b"}}\n```';
+  assert.deepEqual(parseToolCall(text, tools), { name: "bash", arguments: { command: "echo a\necho b" } });
+});
