@@ -982,7 +982,7 @@ function operationPrompt(messages, tools, toolChoice, { compact = false, omitted
       JSON.stringify(history),
       tools.length
         ? "Gere apenas o JSON da próxima operação ou da resposta final para esse cliente."
-        : "Este pedido não tem ferramentas (resumo, título ou texto simples). Responda SOMENTE com o texto pedido na última mensagem do histórico, exatamente no formato que ela exigir, sem JSON, sem tool_call e sem blocos de código extras.",
+        : "Este pedido não tem ferramentas (resumo, título ou texto simples). IGNORE o formato JSON combinado antes nesta conversa: aqui a saída é texto puro, sem {\"type\":...}, sem tool_call e sem blocos de código extras. A última mensagem do histórico é um PEDIDO (por exemplo de resumo): atenda esse pedido exatamente no formato que ela exigir, em vez de continuar a tarefa anterior ou relatar progresso.",
     ].filter(Boolean).join("\n\n"),
     files,
   };
@@ -1049,10 +1049,18 @@ function stripToolCallJson(text) {
     .trim();
 }
 
+// O modelo costuma embrulhar o resumo em {"type":"final","text":"..."} com aspas internas sem escape (JSON inválido); sem ferramentas, tira o envelope na mão.
+function unwrapFinal(text) {
+  const parsed = finalText(text);
+  if (parsed !== text) return parsed;
+  const match = /^\s*(?:```(?:json)?\s*)?\{\s*"type"\s*:\s*"final"\s*,\s*"text"\s*:\s*"([\s\S]*?)"\s*\}\s*(?:```)?\s*$/.exec(text);
+  return match ? match[1].replace(/\\(n|t|"|\\)/g, (_, c) => ({ n: "\n", t: "\t", '"': '"', "\\": "\\" })[c]) : text;
+}
+
 function makeCompletion(text, attachments, request) {
   const tools = toolList(request);
   const call = parseToolCall(text, tools);
-  if (!tools.length) text = stripToolCallJson(finalText(text));
+  if (!tools.length) text = stripToolCallJson(unwrapFinal(text));
   const answerText = finalText(text) || (attachments.length ? "O Muse respondeu com um anexo de mídia." : "");
   const response = {
     id: `chatcmpl-${randomBytes(12).toString("hex")}`,
