@@ -56,6 +56,7 @@ export function currentReply(messages, beforeMessageIds) {
   const replies = messages.slice(userIndex + 1).filter((message) => message.role === "assistant" && message.id && !previous.has(message.id));
   return {
     text: replies.map((message) => message.text.trim()).filter(Boolean).join("\n\n"),
+    markdown: replies.map((message) => (message.markdown || message.text).trim()).filter(Boolean).join("\n\n"),
     busy: replies.some((message) => message.busy),
   };
 }

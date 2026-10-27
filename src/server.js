@@ -759,11 +759,32 @@ async function readChatMessages(beforeMessageIds, signal) {
     const assistant = group.matches(selector) ? group : group.querySelector(selector);
     const text = assistant?.innerText || "";
     const jsonCode = assistant?.querySelector('pre.language-json code')?.innerText;
+    // O Muse renderiza markdown em HTML e innerText perde "##", "-" e "1."; sem ferramentas (resumo de compactação) o OpenCode exige os títulos "## ...".
+    const walk = (n) => {
+      if (n.nodeType === 3) return n.textContent;
+      if (n.nodeType !== 1) return "";
+      const t = n.tagName.toLowerCase();
+      const kids = () => [...n.childNodes].map(walk).join("");
+      if (/^h[1-6]$/.test(t)) return `\n\n${"#".repeat(Number(t[1]))} ${kids().trim()}\n\n`;
+      if (t === "ul" || t === "ol") {
+        let index = 0;
+        return "\n" + [...n.children].filter((child) => child.tagName === "LI").map((li) => `${t === "ol" ? `${++index}.` : "-"} ${walk(li).trim().replace(/\n/g, "\n  ")}`).join("\n") + "\n";
+      }
+      if (t === "pre") return `\n\n\`\`\`\n${(n.querySelector("code")?.textContent ?? n.textContent).replace(/\n$/, "")}\n\`\`\`\n\n`;
+      if (t === "code") return `\`${n.textContent}\``;
+      if (t === "strong" || t === "b") return `**${kids()}**`;
+      if (t === "em" || t === "i") return `*${kids()}*`;
+      if (t === "br") return "\n";
+      if (t === "p") return `\n\n${kids().trim()}\n\n`;
+      return kids();
+    };
+    const markdown = assistant ? walk(assistant.querySelector(".prose") || assistant).replace(/\n{3,}/g, "\n\n").trim() : "";
     const standaloneJson = jsonCode !== undefined && [jsonCode.trim(), `json\n${jsonCode.trim()}`].includes(text.trim());
     return {
       id: group.getAttribute("data-message-id"), role,
       error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
       text: role === "assistant" ? standaloneJson ? jsonCode : text : "",
+      markdown: role === "assistant" ? (standaloneJson ? jsonCode : markdown) : "",
       busy: role === "assistant" && (
         !assistant
         || assistant.closest('[aria-busy]')?.getAttribute("aria-busy") !== "false"
@@ -827,7 +848,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     const reply = currentReply(messages, beforeMessageIds);
     const currentMedia = await readMediaSources(signal);
     const hasNewMedia = currentMedia.some((source) => source && !beforeMedia.includes(source));
-    let candidate = reply?.text || "";
+    let candidate = (als.getStore()?.plain ? reply?.markdown : reply?.text) || "";
     candidate = candidate.replace(/\n{3,}/g, "\n\n").trim();
     if (candidate && !/^(pensando|gerando|aguarde|thinking|generating)[.…]*$/i.test(candidate)) {
       if (candidate !== lastText) {
@@ -1139,7 +1160,7 @@ async function handleCompletion(req, res) {
       // Once active, finish and cache the same request even if OpenCode drops its HTTP connection.
       signal = executionDeadline;
       signal.throwIfAborted();
-      return als.run({ page: await slotPage(slot) }, async () => {
+      return als.run({ page: await slotPage(slot), plain: !toolList(body).length }, async () => {
       activeRuns.set(sessionId, requestHash);
       setConversation(conversations.get(sessionId) ?? newConversation(sessionId));
       // Guardado com o envio pendente: se o serviço reiniciar, a ponte refaz a chamada sozinha (resumePending).

@@ -94,11 +94,11 @@ test("returns only assistant replies after a newly submitted user turn", () => {
   ];
   const before = history.map((message) => message.id);
   assert.equal(currentReply(history, before), null);
-  assert.deepEqual(currentReply([...history, { id: "u2", role: "user", text: "Agora" }], before), { text: "", busy: false });
+  assert.deepEqual(currentReply([...history, { id: "u2", role: "user", text: "Agora" }], before), { text: "", markdown: "", busy: false });
   assert.deepEqual(currentReply([...history,
     { id: "u2", role: "user", text: "Agora" },
     { id: "a2", role: "assistant", text: "Resposta antiga", busy: true },
-  ], before), { text: "Resposta antiga", busy: true });
+  ], before), { text: "Resposta antiga", markdown: "Resposta antiga", busy: true });
   assert.equal(currentReply([...history, { id: "a2", role: "assistant", text: "Histórico atualizado" }], before), null);
 });
 
@@ -108,7 +108,7 @@ test("correlates by message ID even when rendering changes text or removes earli
     { id: "u2", role: "user", text: "Texto normalizado pelo navegador" },
     { id: "a2", role: "assistant", text: '{"type":"tool_call","name":"shell","arguments":{"command":"mkdir -p sample-dir"}}', busy: false },
   ];
-  assert.deepEqual(currentReply(visible, before), { text: visible[1].text, busy: false });
+  assert.deepEqual(currentReply(visible, before), { text: visible[1].text, markdown: visible[1].text, busy: false });
   assert.equal(currentReply(visible, ["u2", "a2"]), null);
 });
 
@@ -344,4 +344,10 @@ test("a thread rotates only when it has an address and passed a limit", () => {
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 370000, baseChars: 360000, turns: 1 }, 300000, 40), false);
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 10, turns: 3 }, 300000, 40), false);
   assert.equal(needsRotation({ threadChars: 999999 }, 300000, 40), false);
+});
+
+test("currentReply prefers rendered markdown when the page provides it", () => {
+  const reply = currentReply([{ id: "u2", role: "user", text: "x" }, { id: "a2", role: "assistant", text: "Objective\nitem", markdown: "## Objective\n- item" }], []);
+  assert.equal(reply.markdown, "## Objective\n- item");
+  assert.equal(reply.text, "Objective\nitem");
 });
