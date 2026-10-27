@@ -1224,7 +1224,7 @@ async function handleCompletion(req, res) {
       : pageTimeout ? "A página do Muse demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
       : error.message || "Falha ao conversar com o Muse.";
     const code = reviewRequired ? "submission_review_required" : timedOut ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
-    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
+    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", session: sessionId.slice(-8), detail: String(error.message || "").slice(0, 140), status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
     if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
     sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: reviewRequired ? false : error.retryable ?? (timedOut || pageTimeout ? true : undefined) } });
   }
