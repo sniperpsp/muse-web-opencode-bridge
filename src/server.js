@@ -646,7 +646,17 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     if (files.length) await uploadFiles(files, signal);
     const beforeMessageIds = await museBrowserOperation(() => curPage().locator('[data-message-id][data-message-role]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-message-id"))), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
-    if (prompt) await museBrowserOperation(() => composer.fill(prompt), signal, "Escrever a mensagem no Muse");
+    // fill() digita o texto por inserção e leva 13s com 90k caracteres (travava o Chromium); definir o valor nativo de uma vez e disparar um único input leva <1s.
+    if (prompt) await museBrowserOperation(async () => {
+      const done = await composer.evaluate((element, text) => {
+        if (!(element instanceof HTMLTextAreaElement)) return false;
+        element.focus();
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(element, text);
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      }, prompt);
+      if (!done) await composer.fill(prompt);
+    }, signal, "Escrever a mensagem no Muse");
     signal.throwIfAborted();
     conversation.pendingSubmission = { requestHash, prompt, beforeMessageIds, beforeMedia, startedAt: Date.now(), phase: "sending", attempt };
     await saveConversations();
