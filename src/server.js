@@ -33,6 +33,7 @@ const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the ChatGPT account's quota.
+const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 150000);
 const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
 const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
@@ -42,7 +43,7 @@ const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
 const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
-const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
+const BROWSER_OPERATION_TIMEOUT_MS = Math.min(Number(process.env.MUSE_BROWSER_OP_TIMEOUT_MS || 40000), REQUEST_TIMEOUT_MS);
 
 let apiKey;
 let browser;
@@ -69,6 +70,19 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
+let lastChromiumKill = 0;
+let reconnectFailures = 0;
+const interruptTimes = [];
+function killAuthChromium(reason) {
+  if (!MANAGED_AUTH_BROWSER || Date.now() - lastChromiumKill < 60000) return;
+  lastChromiumKill = Date.now();
+  reconnectFailures = 0;
+  interruptTimes.length = 0;
+  console.warn(JSON.stringify({ event: "muse_browser", phase: "chromium_killed", reason }));
+  authChromiumProcess?.kill("SIGKILL");
+  spawn("pkill", ["-9", "-f", "chromium"], { stdio: "ignore" }).on("error", () => {});
+}
+
 function museBrowserOperation(operation, signal, label) {
   const connection = browser;
   return withBrowserOperationTimeout(operation, {
@@ -80,6 +94,10 @@ function museBrowserOperation(operation, signal, label) {
       browserState = MANAGED_AUTH_BROWSER ? "Reconectando ao Chromium do Docker…" : "Reconectando ao navegador CDP…";
       browserError = "Uma operação da página do ChatGPT não respondeu. A ponte está reconectando ao navegador com o mesmo perfil.";
       await connection.close({ reason: error.message });
+      const now = Date.now();
+      interruptTimes.push(now);
+      while (interruptTimes.length && now - interruptTimes[0] > 180000) interruptTimes.shift();
+      if (interruptTimes.length >= 2) killAuthChromium("operações da página sem resposta repetidas");
     },
   }).catch((error) => {
     if (error.code === "muse_browser_operation_timeout" || signal?.aborted) throw error;
@@ -137,7 +155,8 @@ async function resumePending() {
   }
 }
 resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
-openMuseBrowser().catch((error) => {
+openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
+      if (++reconnectFailures >= 2) killAuthChromium("reconexão ao Chromium falhando");
       browserError = error.message;
       browserState = "Aguardando navegador para reconectar";
       scheduleReconnect();
@@ -174,6 +193,7 @@ async function spawnAuthChromium() {
   for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     await rm(join(AUTH_PROFILE_DIR, name), { force: true });
   }
+  await rm(join(AUTH_PROFILE_DIR, "Default", "Sessions"), { recursive: true, force: true }); // restaurar abas antigas trava o Chromium
   authChromiumProcess = spawn(CHROMIUM_BIN, [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -973,10 +993,18 @@ function stripToolCallJson(text) {
     .trim();
 }
 
+// O modelo costuma embrulhar o resumo em {"type":"final","text":"..."} com aspas internas sem escape (JSON inválido); sem ferramentas, tira o envelope na mão.
+function unwrapFinal(text) {
+  const parsed = finalText(text);
+  if (parsed !== text) return parsed;
+  const match = /^\s*(?:```(?:json)?\s*)?\{\s*"type"\s*:\s*"final"\s*,\s*"text"\s*:\s*"([\s\S]*?)"\s*\}\s*(?:```)?\s*$/.exec(text);
+  return match ? match[1].replace(/\\(n|t|"|\\)/g, (_, c) => ({ n: "\n", t: "\t", '"': '"', "\\": "\\" })[c]) : text;
+}
+
 function makeCompletion(text, attachments, request) {
   const tools = toolList(request);
   const call = parseToolCall(text, tools);
-  if (!tools.length) text = stripToolCallJson(finalText(text));
+  if (!tools.length) text = stripToolCallJson(unwrapFinal(text));
   const answerText = finalText(text) || (attachments.length ? "O ChatGPT respondeu com um anexo de mídia." : "");
   const response = {
     id: `chatcmpl-${randomBytes(12).toString("hex")}`,
@@ -1088,15 +1116,19 @@ async function handleCompletion(req, res) {
       }
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
-      } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
-        const budget = MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000;
-        const fit = fitHistory(body.messages, budget);
-        requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
-        sentFull = true;
       } else {
-        const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
-        requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
-        sentFull = !compact;
+        if (conversation.previousMessages.length && isPrefix(conversation.previousMessages, body.messages)) {
+          const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
+          requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
+          sentFull = !compact;
+        }
+        // Sem prefixo conhecido, ou continuação grande demais (resultado de ferramenta enorme): reenvia o histórico cortado para caber.
+        if (!requestMessages || requestMessages.prompt.length > MAX_PROMPT_CHARS) {
+          const budget = Math.min(MAX_PROMPT_CHARS, tools.length ? HISTORY_CHARS : MAX_PROMPT_CHARS) - toolInstructions(tools, body.tool_choice).length - 3000;
+          const fit = fitHistory(body.messages, budget);
+          requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
+          sentFull = true;
+        }
       }
       let answer = await submitWithRecovery(sessionId, requestMessages.prompt, requestMessages.files, requestHash, signal);
       let result = makeCompletion(answer.text, answer.attachments, body);
@@ -1110,6 +1142,7 @@ async function handleCompletion(req, res) {
         answer = await submitWithRecovery(sessionId, retryPrompt, [], requestHash, signal, 1);
         result = makeCompletion(answer.text, answer.attachments, body);
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
+          console.warn(JSON.stringify({ event: "tool_call_unparsed", session: sessionId.slice(-8), chars: answer.text.length, head: answer.text.slice(0, 300), tail: answer.text.slice(-200) }));
           result = makeCompletion("A última operação do ChatGPT veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }
