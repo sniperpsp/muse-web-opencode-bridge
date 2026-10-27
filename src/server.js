@@ -104,6 +104,20 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
+// Chromium travado (aba pesada que não responde) não se recupera só reconectando: mata o processo para o ciclo de reconexão subir um novo.
+let reconnectFailures = 0;
+let lastChromiumKill = 0;
+const interruptTimes = [];
+function killAuthChromium(reason) {
+  if (!MANAGED_AUTH_BROWSER || Date.now() - lastChromiumKill < 60000) return;
+  lastChromiumKill = Date.now();
+  reconnectFailures = 0;
+  interruptTimes.length = 0;
+  console.warn(JSON.stringify({ event: "muse_browser", phase: "chromium_killed", reason }));
+  authChromiumProcess?.kill("SIGKILL");
+  spawn("pkill", ["-9", "-f", "chromium"], { stdio: "ignore" }).on("error", () => {});
+}
+
 function museBrowserOperation(operation, signal, label) {
   const connection = browser;
   return withBrowserOperationTimeout(operation, {
@@ -115,6 +129,10 @@ function museBrowserOperation(operation, signal, label) {
       browserState = MANAGED_AUTH_BROWSER ? "Reconectando ao Chromium do Docker…" : "Reconectando ao navegador CDP…";
       browserError = "Uma operação da página do Muse não respondeu. A ponte está reconectando ao navegador com o mesmo perfil.";
       await connection.close({ reason: error.message });
+      const now = Date.now();
+      interruptTimes.push(now);
+      while (interruptTimes.length && now - interruptTimes[0] > 180000) interruptTimes.shift();
+      if (interruptTimes.length >= 2) killAuthChromium("operações da página sem resposta repetidas");
     },
   }).catch((error) => {
     if (error.code === "muse_browser_operation_timeout" || signal?.aborted) throw error;
@@ -172,7 +190,8 @@ async function resumePending() {
   }
 }
 resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
-openMuseBrowser().catch((error) => {
+openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
+      if (++reconnectFailures >= 2) killAuthChromium("reconexão ao Chromium falhando");
       browserError = error.message;
       browserState = "Aguardando navegador para reconectar";
       scheduleReconnect();
@@ -209,6 +228,8 @@ async function spawnAuthChromium() {
   for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     await rm(join(AUTH_PROFILE_DIR, name), { force: true });
   }
+  // Sem restaurar abas: reabrir a aba pesada que travou o Chromium travaria de novo.
+  await rm(join(AUTH_PROFILE_DIR, "Default", "Sessions"), { recursive: true, force: true });
   authChromiumProcess = spawn(CHROMIUM_BIN, [
     "--no-sandbox",
     "--disable-setuid-sandbox",
