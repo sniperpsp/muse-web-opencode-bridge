@@ -43,7 +43,9 @@ const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
 const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
-const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
+const BROWSER_OPERATION_TIMEOUT_MS = Math.min(Number(process.env.MUSE_BROWSER_OP_TIMEOUT_MS || 40000), REQUEST_TIMEOUT_MS);
+// Histórico enviado ao abrir/rotacionar um thread com ferramentas: mensagens gigantes deixam a aba do Muse pesada demais. Pedidos sem ferramentas (compactação) usam o limite cheio.
+const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 150000);
 
 let apiKey;
 let browser;
@@ -748,7 +750,6 @@ async function readChatMessages(beforeMessageIds, signal) {
     const text = assistant?.innerText || "";
     const jsonCode = assistant?.querySelector('pre.language-json code')?.innerText;
     const standaloneJson = jsonCode !== undefined && [jsonCode.trim(), `json\n${jsonCode.trim()}`].includes(text.trim());
-    const hasResponseMedia = group.querySelector("img, audio, video, a[download]");
     return {
       id: group.getAttribute("data-message-id"), role,
       error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
@@ -756,7 +757,6 @@ async function readChatMessages(beforeMessageIds, signal) {
       busy: role === "assistant" && (
         !assistant
         || assistant.closest('[aria-busy]')?.getAttribute("aria-busy") !== "false"
-        || (!hasResponseMedia && !group.querySelector('button[aria-label="Copy response"], button[aria-label="Copiar resposta"]'))
       ),
     };
     });
@@ -1151,7 +1151,7 @@ async function handleCompletion(req, res) {
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
       } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
-        const budget = MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000;
+        const budget = Math.min(MAX_PROMPT_CHARS, tools.length ? HISTORY_CHARS : MAX_PROMPT_CHARS) - toolInstructions(tools, body.tool_choice).length - 3000;
         const fit = fitHistory(body.messages, budget);
         requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
         sentFull = true;
