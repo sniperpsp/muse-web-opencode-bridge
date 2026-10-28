@@ -34,18 +34,18 @@ const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the Muse account's quota.
-const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
-const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
+const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 500000);
+const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 250000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
 const FULL_INSTRUCTIONS_EVERY = 6;
 const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
-const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
+const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 420000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
 const BROWSER_OPERATION_TIMEOUT_MS = Math.min(Number(process.env.MUSE_BROWSER_OP_TIMEOUT_MS || 40000), REQUEST_TIMEOUT_MS);
 // Histórico enviado ao abrir/rotacionar um thread com ferramentas: mensagens gigantes deixam a aba do Muse pesada demais. Pedidos sem ferramentas (compactação) usam o limite cheio.
-const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 150000);
+const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 80000);
 
 let apiKey;
 let browser;
@@ -54,7 +54,7 @@ let primaryPage;
 const pool = [];
 const als = new AsyncLocalStorage();
 const curPage = () => als.getStore()?.page ?? primaryPage;
-const MAX_TABS = Math.max(1, Math.min(8, Number(process.env.MUSE_MAX_TABS || 1)));
+const MAX_TABS = Math.max(1, Math.min(8, Number(process.env.MUSE_MAX_TABS || 3)));
 const idleConversation = {};
 const conversation = new Proxy({}, {
   get: (_, key) => (als.getStore()?.conversation ?? idleConversation)[key],

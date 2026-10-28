@@ -84,18 +84,18 @@ Para evitar devolver uma resposta enquanto o Muse ainda está gerando, a ponte e
 
 O contador de timeouts de recuperação fica salvo junto do envio no volume. Após três timeouts do mesmo envio, a ponte retorna `409 submission_review_required` com `retryable: false`, pedindo conferência da conversa em vez de retry automático indefinido. Não apaga o pendente nem reenvia a mensagem. Uma tentativa manual da solicitação original continua podendo recuperar uma resposta que apareça depois. Pedidos diferentes permanecem bloqueados por `submission_pending` para não entregar uma operação antiga como resposta de outra tarefa.
 
-O tempo de execução padrão é 180 segundos. Para alterá-lo, configure `.env` com `MUSE_REQUEST_TIMEOUT_MS` (de 1000 a 600000 milissegundos) e recrie a ponte durante uma pausa. Isso não altera o timeout do OpenCode; ao aumentar o prazo, ajuste o cliente para comportar espera na fila e execução. No OpenCode V2, consulte os [timeouts do provedor](https://dev.opencode.ai/v2/docs/providers/#timeouts).
+O tempo de execução padrão é 420 segundos (7 minutos). Para alterá-lo, configure `.env` com `MUSE_REQUEST_TIMEOUT_MS` (de 1000 a 600000 milissegundos) e recrie a ponte durante uma pausa. Isso não altera o timeout do OpenCode; ao aumentar o prazo, ajuste o cliente para comportar espera na fila e execução. No OpenCode V2, consulte os [timeouts do provedor](https://dev.opencode.ai/v2/docs/providers/#timeouts).
 
 ## Mensagens grandes e integração com Maestro
 
-O limite inicial da ponte é **60.000 caracteres no texto final enviado ao Muse**, somando mensagem, instruções, histórico necessário e catálogo de ferramentas. É uma proteção local configurável, não um limite oficial de tokens ou da conta Muse. A contagem usa unidades UTF-16 (um emoji pode contar como dois). Se o campo do site anunciar um `maxlength` menor, esse limite também é respeitado. O site pode aplicar outras restrições que não publica nesse campo.
+O limite padrão da ponte é **500.000 caracteres no texto final enviado ao Muse**, somando mensagem, instruções, histórico necessário e catálogo de ferramentas. É uma proteção local configurável, não um limite oficial de tokens ou da conta Muse. A contagem usa unidades UTF-16 (um emoji pode contar como dois). Se o campo do site anunciar um `maxlength` menor, esse limite também é respeitado. O site pode aplicar outras restrições que não publica nesse campo.
 
-Validação em 18/10/2026, pela API da instalação em execução: três chamadas com 32.000, 64.000 e 128.000 caracteres de entrada produziram mensagens de 32.099, 64.099 e 128.099 caracteres na página, todas respondidas com `OK`. A caixa não declarou `maxlength`. Esses testes usaram texto sintético repetitivo, sem catálogo de ferramentas ou histórico extenso: comprovam esses envios, mas não determinam o teto do Muse nem garantem o mesmo resultado com outros conteúdos, contas ou conversas. O limite local de 60.000 permanece provisório; não foi deduzido desses testes.
+Validação em 18/10/2026, pela API da instalação em execução: três chamadas com 32.000, 64.000 e 128.000 caracteres de entrada produziram mensagens de 32.099, 64.099 e 128.099 caracteres na página, todas respondidas com `OK`. A caixa não declarou `maxlength`. Esses testes usaram texto sintético repetitivo, sem catálogo de ferramentas ou histórico extenso: comprovam esses envios, mas não determinam o teto do Muse nem garantem o mesmo resultado com outros conteúdos, contas ou conversas. O limite local é uma proteção configurável; não foi deduzido desses testes.
 
 Antes de preencher a mensagem ou enviar anexos, a ponte rejeita excesso com HTTP `400`:
 
 ```json
-{"error":{"type":"invalid_request_error","code":"context_length_exceeded","param":"messages","limit_chars":60000,"received_chars":72000,"retryable":false,"message":"...reduza a demanda, o histórico ou os resultados de ferramentas..."}}
+{"error":{"type":"invalid_request_error","code":"context_length_exceeded","param":"messages","limit_chars":500000,"received_chars":520000,"retryable":false,"message":"...reduza a demanda, o histórico ou os resultados de ferramentas..."}}
 ```
 
 O cliente Maestro/Maestri deve tratar esse erro e **reformular** a chamada: dividir a tarefa em etapas e reduzir resultados extensos de ferramentas. Repetir o mesmo payload não resolve. O texto digitado pelo usuário pode ser curto enquanto as instruções e ferramentas excedem o limite. A ponte não corta conteúdo nem inventa uma resposta do modelo. Um erro HTTP é recebido pelo cliente; o modelo só recebe essa orientação se o cliente a encaminhar.
@@ -104,7 +104,7 @@ Se o próprio Muse exibir uma rejeição explícita de tamanho no envio, a ponte
 
 `GET /v1/models` inclui uma extensão `limits` para clientes consultarem os limites antes de enviar. Continuam valendo até 500 mensagens no array, corpo total de 28 MiB (texto e anexos), mídia de resposta de até 6 MiB por item e 180 segundos por chamada. Corpo maior recebe `413` com `code: request_too_large` e `limit_bytes`, em vez de desconectar sem explicação.
 
-Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=60000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
+Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=200000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
 
 Uma tela de login identificada por campos e texto de autenticação usa `code: muse_authentication_required` (`401`). A ausência temporária da caixa de mensagem recebe uma segunda verificação e, se persistir sem evidência de login, retorna `503` com `muse_page_not_ready` e `retryable: true`. Leituras CDP interrompidas usam `muse_browser_operation_timeout` ou `muse_browser_reconnecting`; a expiração da chamada usa `request_timeout`. Esses casos não são apresentados como perda de login. O cliente deve repetir a mesma solicitação para retomar um envio pendente sem duplicá-lo.
 
@@ -183,3 +183,8 @@ MUSE_BRIDGE_LIVE_TEST=1 npm test
 Rode esse teste apenas quando o Docker estiver ativo e não houver outra solicitação em andamento.
 
 Documentação de arquitetura e operação: [docs/ARQUITETURA-E-USO.md](docs/ARQUITETURA-E-USO.md).
+
+
+## Padrões de desempenho
+
+Os padrões já vêm no `docker-compose.yml`, sem precisar de `.env`: 500.000 caracteres por envio (`MUSE_MAX_PROMPT_CHARS`), 80.000 de histórico reenviado em chamadas com ferramentas (`MUSE_HISTORY_CHARS`), 3 abas em paralelo (`MUSE_MAX_TABS`, de 1 a 8), troca de conversa do Muse a cada 40 turnos ou 250.000 caracteres (`MUSE_ROTATE_TURNS`, `MUSE_ROTATE_CHARS`) e 420 s por chamada (`MUSE_REQUEST_TIMEOUT_MS`). Para mudar algum valor, crie um `.env` local (ignorado pelo Git) com só a variável desejada.
