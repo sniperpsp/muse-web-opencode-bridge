@@ -84,7 +84,7 @@ Para evitar devolver uma resposta enquanto o Muse ainda está gerando, a ponte e
 
 O contador de timeouts de recuperação fica salvo junto do envio no volume. Após três timeouts do mesmo envio, a ponte retorna `409 submission_review_required` com `retryable: false`, pedindo conferência da conversa em vez de retry automático indefinido. Não apaga o pendente nem reenvia a mensagem. Uma tentativa manual da solicitação original continua podendo recuperar uma resposta que apareça depois. Pedidos diferentes permanecem bloqueados por `submission_pending` para não entregar uma operação antiga como resposta de outra tarefa.
 
-O tempo de execução padrão é 420 segundos (7 minutos). Para alterá-lo, configure `.env` com `MUSE_REQUEST_TIMEOUT_MS` (de 1000 a 600000 milissegundos) e recrie a ponte durante uma pausa. Isso não altera o timeout do OpenCode; ao aumentar o prazo, ajuste o cliente para comportar espera na fila e execução. No OpenCode V2, consulte os [timeouts do provedor](https://dev.opencode.ai/v2/docs/providers/#timeouts).
+O tempo de execução padrão é 420 segundos (7 minutos). Para alterá-lo, edite `MUSE_REQUEST_TIMEOUT_MS` em `performance.env` (de 1000 a 600000 milissegundos) e recrie a ponte durante uma pausa. Isso não altera o timeout do OpenCode; ao aumentar o prazo, ajuste o cliente para comportar espera na fila e execução. No OpenCode V2, consulte os [timeouts do provedor](https://dev.opencode.ai/v2/docs/providers/#timeouts).
 
 ## Mensagens grandes e integração com Maestro
 
@@ -104,7 +104,7 @@ Se o próprio Muse exibir uma rejeição explícita de tamanho no envio, a ponte
 
 `GET /v1/models` inclui uma extensão `limits` para clientes consultarem os limites antes de enviar. Continuam valendo até 500 mensagens no array, corpo total de 28 MiB (texto e anexos), mídia de resposta de até 6 MiB por item e 180 segundos por chamada. Corpo maior recebe `413` com `code: request_too_large` e `limit_bytes`, em vez de desconectar sem explicação.
 
-Para ajustar o limite local, crie `.env` na pasta do projeto com `MUSE_MAX_PROMPT_CHARS=200000` e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
+Para ajustar o limite local, edite `MUSE_MAX_PROMPT_CHARS` em `performance.env` (por exemplo, `200000`) e rode o instalador novamente. Aumentar isso não aumenta a capacidade ou a cota do Muse. Use um valor compatível com a interface da sua conta.
 
 Uma tela de login identificada por campos e texto de autenticação usa `code: muse_authentication_required` (`401`). A ausência temporária da caixa de mensagem recebe uma segunda verificação e, se persistir sem evidência de login, retorna `503` com `muse_page_not_ready` e `retryable: true`. Leituras CDP interrompidas usam `muse_browser_operation_timeout` ou `muse_browser_reconnecting`; a expiração da chamada usa `request_timeout`. Esses casos não são apresentados como perda de login. O cliente deve repetir a mesma solicitação para retomar um envio pendente sem duplicá-lo.
 
@@ -187,4 +187,4 @@ Documentação de arquitetura e operação: [docs/ARQUITETURA-E-USO.md](docs/ARQ
 
 ## Padrões de desempenho
 
-Os padrões já vêm no `docker-compose.yml`, sem precisar de `.env`: 500.000 caracteres por envio (`MUSE_MAX_PROMPT_CHARS`), 80.000 de histórico reenviado em chamadas com ferramentas (`MUSE_HISTORY_CHARS`), 3 abas em paralelo (`MUSE_MAX_TABS`, de 1 a 8), troca de conversa do Muse a cada 40 turnos ou 250.000 caracteres (`MUSE_ROTATE_TURNS`, `MUSE_ROTATE_CHARS`) e 420 s por chamada (`MUSE_REQUEST_TIMEOUT_MS`). Para mudar algum valor, crie um `.env` local (ignorado pelo Git) com só a variável desejada.
+O arquivo `performance.env`, versionado no repositório, define a configuração de desempenho e é carregado pelo `docker-compose.yml`. Quem atualiza o repositório passa a usar os mesmos valores: 500.000 caracteres por envio (`MUSE_MAX_PROMPT_CHARS`), 80.000 de histórico reenviado em chamadas com ferramentas (`MUSE_HISTORY_CHARS`), 3 abas em paralelo (`MUSE_MAX_TABS`, de 1 a 8), troca de conversa do Muse a cada 40 turnos ou 250.000 caracteres (`MUSE_ROTATE_TURNS`, `MUSE_ROTATE_CHARS`) e 420 s por chamada (`MUSE_REQUEST_TIMEOUT_MS`). Um `.env` local não altera esses valores; para mudá-los, edite `performance.env` e recrie a ponte.

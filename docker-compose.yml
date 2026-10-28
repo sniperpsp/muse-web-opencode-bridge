@@ -4,13 +4,8 @@ services:
       context: .
       args:
         MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
-    environment:
-      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-500000}
-      MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-420000}
-      MUSE_HISTORY_CHARS: ${MUSE_HISTORY_CHARS:-80000}
-      MUSE_MAX_TABS: ${MUSE_MAX_TABS:-3}
-      MUSE_ROTATE_TURNS: ${MUSE_ROTATE_TURNS:-40}
-      MUSE_ROTATE_CHARS: ${MUSE_ROTATE_CHARS:-250000}
+    env_file:
+      - performance.env
     image: muse-opencode-bridge:local
     container_name: muse-opencode-bridge
     init: true
