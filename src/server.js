@@ -927,9 +927,8 @@ async function collectNewMedia(beforeSources, signal) {
   return attachments;
 }
 
-function messageKey(message) {
-  return JSON.stringify(message);
-}
+// Guarda só o hash de cada mensagem já enviada (não o texto): o conversations.json chegou a 40 MB e era regravado inteiro a cada chamada.
+const messageKey = (message) => typeof message === "string" ? message : sha(JSON.stringify(message));
 
 function isPrefix(prefix, messages) {
   return prefix.length <= messages.length && prefix.every((message, index) => messageKey(message) === messageKey(messages[index]));
@@ -1222,7 +1221,7 @@ async function handleCompletion(req, res) {
         conversation.toolsKey = toolsKey;
         conversation.sinceFull = sentFull ? 0 : (conversation.sinceFull || 0) + 1;
       }
-      conversation.previousMessages = body.messages.slice();
+      conversation.previousMessages = body.messages.map(messageKey);
       conversation.previousRequestHash = requestHash;
       conversation.previousResponse = result;
       console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "completed", elapsedMs: Date.now() - conversation.pendingSubmission.startedAt, finish: result.choices[0].finish_reason }));
@@ -1476,6 +1475,7 @@ process.on("SIGTERM", shutdown);
 apiKey = await loadApiKey();
 try {
   conversations = new Map(Object.entries(JSON.parse(await readFile(CONVERSATIONS_FILE, "utf8"))));
+  for (const saved of conversations.values()) if (Array.isArray(saved.previousMessages)) saved.previousMessages = saved.previousMessages.map(messageKey); // formato antigo: texto completo
 } catch (error) {
   if (error.code !== "ENOENT") throw error;
 }
