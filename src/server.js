@@ -33,15 +33,15 @@ const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the ChatGPT account's quota.
-const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 150000);
-const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
-const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
+const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 80000);
+const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 500000);
+const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 250000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
 const FULL_INSTRUCTIONS_EVERY = 6;
 const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
-const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
+const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 420000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
 const BROWSER_OPERATION_TIMEOUT_MS = Math.min(Number(process.env.MUSE_BROWSER_OP_TIMEOUT_MS || 40000), REQUEST_TIMEOUT_MS);
 
@@ -962,6 +962,28 @@ function initialPrompt(messages, tools, toolChoice, options) {
   return { prompt: parts.join("\n\n"), files: latestFiles };
 }
 
+// O orçamento do fitHistory conta JSON cru e ignora o texto que o prompt acrescenta (formato das mensagens, ferramentas); por isso mede o prompt
+// montado e aperta o orçamento até caber. Se só as mensagens fixas já estouram, encurta os maiores resultados de ferramenta (início + fim).
+function fitPrompt(messages, tools, toolChoice) {
+  let budget = Math.min(MAX_PROMPT_CHARS, tools.length ? HISTORY_CHARS : MAX_PROMPT_CHARS) - toolInstructions(tools, toolChoice).length - 3000;
+  let work = messages;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const fit = fitHistory(work, budget);
+    const built = initialPrompt(fit.messages, tools, toolChoice, { omitted: fit.omitted });
+    const over = built.prompt.length - MAX_PROMPT_CHARS;
+    if (over <= 0) return built;
+    if (fit.omitted < work.filter((m) => m.role !== "system" && m.role !== "developer").length - 1) { budget -= over + 2000; continue; }
+    const text = (m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+    const biggest = work.reduce((best, m, i) => (m.role === "tool" || m.role === "user") && text(m).length > (best < 0 ? 0 : text(work[best]).length) ? i : best, -1);
+    if (biggest < 0) return built;
+    const body = text(work[biggest]);
+    const keep = Math.max(2000, body.length - over - 2000);
+    if (keep >= body.length) return built;
+    work = work.map((m, i) => i === biggest ? { ...m, content: `${body.slice(0, Math.floor(keep * 0.6))}\n[... conteúdo cortado pela ponte para caber no limite ...]\n${body.slice(-Math.floor(keep * 0.4))}` } : m);
+  }
+  return initialPrompt(fitHistory(work, budget).messages, tools, toolChoice, { omitted: 0 });
+}
+
 function followupPrompt(messages, tools, toolChoice, options) {
   const greeting = greetingPrompt(messages, toolChoice);
   if (greeting) return greeting;
@@ -1124,9 +1146,7 @@ async function handleCompletion(req, res) {
         }
         // Sem prefixo conhecido, ou continuação grande demais (resultado de ferramenta enorme): reenvia o histórico cortado para caber.
         if (!requestMessages || requestMessages.prompt.length > MAX_PROMPT_CHARS) {
-          const budget = Math.min(MAX_PROMPT_CHARS, tools.length ? HISTORY_CHARS : MAX_PROMPT_CHARS) - toolInstructions(tools, body.tool_choice).length - 3000;
-          const fit = fitHistory(body.messages, budget);
-          requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
+          requestMessages = fitPrompt(body.messages, tools, body.tool_choice);
           sentFull = true;
         }
       }
