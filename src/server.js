@@ -576,6 +576,14 @@ async function uploadFiles(files, signal) {
   await museBrowserOperation(() => inputs.first().setInputFiles(files), signal, "Anexar arquivos ao ChatGPT");
 }
 
+// O editor do chatgpt.com (ProseMirror) cria um parágrafo por linha e fica lento (~40 ms/linha: 500 linhas = 19 s, travava o Chromium).
+// Texto sem quebras de linha entra em <1 s mesmo com 300k caracteres, então prompts longos vão numa linha só, com ⏎ no lugar das quebras.
+const MAX_COMPOSER_LINES = 120;
+function composerText(prompt) {
+  if (prompt.split("\n").length <= MAX_COMPOSER_LINES) return prompt;
+  return "(Neste texto, ⏎ representa uma quebra de linha.) " + prompt.replace(/\n{2,}/g, " ⏎⏎ ").replace(/\n/g, " ⏎ ");
+}
+
 async function submitText(prompt, files, requestHash, signal, attempt = 0) {
   signal.throwIfAborted();
   if (!conversation.pendingSubmission) {
@@ -586,7 +594,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     if (files.length) await uploadFiles(files, signal);
     const beforeMessageIds = await museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-content-search-unit-key"))), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
-    if (prompt) await museBrowserOperation(() => composer.fill(prompt), signal, "Escrever a mensagem no ChatGPT");
+    if (prompt) await museBrowserOperation(() => composer.fill(composerText(prompt)), signal, "Escrever a mensagem no ChatGPT");
     signal.throwIfAborted();
     conversation.pendingSubmission = { requestHash, prompt, beforeMessageIds, beforeMedia, startedAt: Date.now(), phase: "sending", attempt };
     await saveConversations();
@@ -1162,7 +1170,7 @@ async function handleCompletion(req, res) {
       : pageTimeout ? "A página do ChatGPT demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
       : error.message || "Falha ao conversar com o ChatGPT.";
     const code = reviewRequired ? "submission_review_required" : timedOut ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
-    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
+    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, detail: String(error.message).slice(0, 200), limit_chars: error.limit_chars, received_chars: error.received_chars }));
     if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
     sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: reviewRequired ? false : error.retryable ?? (timedOut || pageTimeout ? true : undefined) } });
   }
