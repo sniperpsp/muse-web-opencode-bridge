@@ -40,7 +40,7 @@ const FULL_INSTRUCTIONS_EVERY = 6;
 const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
-const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
+const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 420000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
 const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
 
@@ -647,15 +647,18 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
           status: 503, code: "muse_browser_reconnecting", retryable: true,
         });
       }
-      try { await requireMuseReady(signal); }
-      catch (readyError) {
-        if (readyError.code !== "muse_page_not_ready" || !(await museThreadBroken(signal))) throw readyError;
-        // A página ficou presa numa thread quebrada: tenta o Try again do ChatGPT e, se persistir, sai dela para a página inicial.
-        if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
-          console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: musePage.url() }));
-          await museBrowserOperation(() => musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
+      // Resposta já enviada e só falta lê-la: não exige a caixa de mensagem (a página ocupada gerando/renderizando a esconde e dava "página não pronta" em loop).
+      if (conversations.get(sessionId)?.pendingSubmission?.phase !== "waiting") {
+        try { await requireMuseReady(signal); }
+        catch (readyError) {
+          if (readyError.code !== "muse_page_not_ready" || !(await museThreadBroken(signal))) throw readyError;
+          // A página ficou presa numa thread quebrada: tenta o Try again do ChatGPT e, se persistir, sai dela para a página inicial.
+          if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
+            console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: musePage.url() }));
+            await museBrowserOperation(() => musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
+          }
+          await requireMuseReady(signal);
         }
-        await requireMuseReady(signal);
       }
       browserState = MANAGED_AUTH_BROWSER ? "ChatGPT autenticado no Chromium do Docker" : "ChatGPT autenticado no Obscura";
       browserError = "";
