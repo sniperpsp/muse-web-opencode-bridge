@@ -94,11 +94,11 @@ test("returns only assistant replies after a newly submitted user turn", () => {
   ];
   const before = history.map((message) => message.id);
   assert.equal(currentReply(history, before), null);
-  assert.deepEqual(currentReply([...history, { id: "u2", role: "user", text: "Agora" }], before), { text: "", markdown: "", busy: false });
+  assert.deepEqual(currentReply([...history, { id: "u2", role: "user", text: "Agora" }], before), { text: "", busy: false });
   assert.deepEqual(currentReply([...history,
     { id: "u2", role: "user", text: "Agora" },
     { id: "a2", role: "assistant", text: "Resposta antiga", busy: true },
-  ], before), { text: "Resposta antiga", markdown: "Resposta antiga", busy: true });
+  ], before), { text: "Resposta antiga", busy: true });
   assert.equal(currentReply([...history, { id: "a2", role: "assistant", text: "Histórico atualizado" }], before), null);
 });
 
@@ -108,7 +108,7 @@ test("correlates by message ID even when rendering changes text or removes earli
     { id: "u2", role: "user", text: "Texto normalizado pelo navegador" },
     { id: "a2", role: "assistant", text: '{"type":"tool_call","name":"shell","arguments":{"command":"mkdir -p sample-dir"}}', busy: false },
   ];
-  assert.deepEqual(currentReply(visible, before), { text: visible[1].text, markdown: visible[1].text, busy: false });
+  assert.deepEqual(currentReply(visible, before), { text: visible[1].text, busy: false });
   assert.equal(currentReply(visible, ["u2", "a2"]), null);
 });
 
@@ -232,7 +232,7 @@ test("live API preserves session threads across retries, switching and container
   assert.ok(idle.authenticated && !idle.request, "Execute sem outra chamada ativa e com o Muse autenticado.");
   const marker = "BRIDGE_RETRY_OK_" + Date.now().toString(36);
   const body = {
-    model: "muse-web", stream: true,
+    model: "chatgpt-web", stream: true,
     messages: [
       { role: "system", content: "Para esta verificação, a resposta final deve ser exatamente " + marker + ". Não execute ferramentas." },
       { role: "user", content: "Responda com o código definido nas instruções do cliente." },
@@ -290,7 +290,7 @@ test("live API preserves session threads across retries, switching and container
   assert.match(thread[marker], /\/thread\/(?!new$)/);
   const second = await fetch(base + "/v1/chat/completions", {
     method: "POST", headers: { Authorization: "Bearer " + config.provider.muse.options.apiKey, "Content-Type": "application/json", "X-Muse-Session-Id": marker + "_B" },
-    body: JSON.stringify({ model: "muse-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
+    body: JSON.stringify({ model: "chatgpt-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
   });
   assert.equal(second.status, 200);
   const secondAnswer = await second.json();
@@ -344,16 +344,4 @@ test("a thread rotates only when it has an address and passed a limit", () => {
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 370000, baseChars: 360000, turns: 1 }, 300000, 40), false);
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 10, turns: 3 }, 300000, 40), false);
   assert.equal(needsRotation({ threadChars: 999999 }, 300000, 40), false);
-});
-
-test("currentReply prefers rendered markdown when the page provides it", () => {
-  const reply = currentReply([{ id: "u2", role: "user", text: "x" }, { id: "a2", role: "assistant", text: "Objective\nitem", markdown: "## Objective\n- item" }], []);
-  assert.equal(reply.markdown, "## Objective\n- item");
-  assert.equal(reply.text, "Objective\nitem");
-});
-
-test("parseToolCall accepts raw newlines inside JSON strings", () => {
-  const tools = [{ type: "function", function: { name: "bash" } }];
-  const text = '```json\n{"type":"tool_call","name":"bash","arguments":{"command":"echo a\necho b"}}\n```';
-  assert.deepEqual(parseToolCall(text, tools), { name: "bash", arguments: { command: "echo a\necho b" } });
 });

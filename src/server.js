@@ -33,17 +33,16 @@ const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the ChatGPT account's quota.
-const HISTORY_CHARS = Number(process.env.MUSE_HISTORY_CHARS || 80000);
-const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 500000);
-const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 250000);
+const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
+const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
 const FULL_INSTRUCTIONS_EVERY = 6;
 const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
-const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 420000);
+const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 180000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
-const BROWSER_OPERATION_TIMEOUT_MS = Math.min(Number(process.env.MUSE_BROWSER_OP_TIMEOUT_MS || 40000), REQUEST_TIMEOUT_MS);
+const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
 
 let apiKey;
 let browser;
@@ -70,19 +69,6 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
-let lastChromiumKill = 0;
-let reconnectFailures = 0;
-const interruptTimes = [];
-function killAuthChromium(reason) {
-  if (!MANAGED_AUTH_BROWSER || Date.now() - lastChromiumKill < 60000) return;
-  lastChromiumKill = Date.now();
-  reconnectFailures = 0;
-  interruptTimes.length = 0;
-  console.warn(JSON.stringify({ event: "muse_browser", phase: "chromium_killed", reason }));
-  authChromiumProcess?.kill("SIGKILL");
-  spawn("pkill", ["-9", "-f", "chromium"], { stdio: "ignore" }).on("error", () => {});
-}
-
 function museBrowserOperation(operation, signal, label) {
   const connection = browser;
   return withBrowserOperationTimeout(operation, {
@@ -94,10 +80,6 @@ function museBrowserOperation(operation, signal, label) {
       browserState = MANAGED_AUTH_BROWSER ? "Reconectando ao Chromium do Docker…" : "Reconectando ao navegador CDP…";
       browserError = "Uma operação da página do ChatGPT não respondeu. A ponte está reconectando ao navegador com o mesmo perfil.";
       await connection.close({ reason: error.message });
-      const now = Date.now();
-      interruptTimes.push(now);
-      while (interruptTimes.length && now - interruptTimes[0] > 180000) interruptTimes.shift();
-      if (interruptTimes.length >= 2) killAuthChromium("operações da página sem resposta repetidas");
     },
   }).catch((error) => {
     if (error.code === "muse_browser_operation_timeout" || signal?.aborted) throw error;
@@ -155,8 +137,7 @@ async function resumePending() {
   }
 }
 resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
-openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
-      if (++reconnectFailures >= 2) killAuthChromium("reconexão ao Chromium falhando");
+openMuseBrowser().catch((error) => {
       browserError = error.message;
       browserState = "Aguardando navegador para reconectar";
       scheduleReconnect();
@@ -193,7 +174,6 @@ async function spawnAuthChromium() {
   for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
     await rm(join(AUTH_PROFILE_DIR, name), { force: true });
   }
-  await rm(join(AUTH_PROFILE_DIR, "Default", "Sessions"), { recursive: true, force: true }); // restaurar abas antigas trava o Chromium
   authChromiumProcess = spawn(CHROMIUM_BIN, [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -962,28 +942,6 @@ function initialPrompt(messages, tools, toolChoice, options) {
   return { prompt: parts.join("\n\n"), files: latestFiles };
 }
 
-// O orçamento do fitHistory conta JSON cru e ignora o texto que o prompt acrescenta (formato das mensagens, ferramentas); por isso mede o prompt
-// montado e aperta o orçamento até caber. Se só as mensagens fixas já estouram, encurta os maiores resultados de ferramenta (início + fim).
-function fitPrompt(messages, tools, toolChoice) {
-  let budget = Math.min(MAX_PROMPT_CHARS, tools.length ? HISTORY_CHARS : MAX_PROMPT_CHARS) - toolInstructions(tools, toolChoice).length - 3000;
-  let work = messages;
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const fit = fitHistory(work, budget);
-    const built = initialPrompt(fit.messages, tools, toolChoice, { omitted: fit.omitted });
-    const over = built.prompt.length - MAX_PROMPT_CHARS;
-    if (over <= 0) return built;
-    if (fit.omitted < work.filter((m) => m.role !== "system" && m.role !== "developer").length - 1) { budget -= over + 2000; continue; }
-    const text = (m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
-    const biggest = work.reduce((best, m, i) => (m.role === "tool" || m.role === "user") && text(m).length > (best < 0 ? 0 : text(work[best]).length) ? i : best, -1);
-    if (biggest < 0) return built;
-    const body = text(work[biggest]);
-    const keep = Math.max(2000, body.length - over - 2000);
-    if (keep >= body.length) return built;
-    work = work.map((m, i) => i === biggest ? { ...m, content: `${body.slice(0, Math.floor(keep * 0.6))}\n[... conteúdo cortado pela ponte para caber no limite ...]\n${body.slice(-Math.floor(keep * 0.4))}` } : m);
-  }
-  return initialPrompt(fitHistory(work, budget).messages, tools, toolChoice, { omitted: 0 });
-}
-
 function followupPrompt(messages, tools, toolChoice, options) {
   const greeting = greetingPrompt(messages, toolChoice);
   if (greeting) return greeting;
@@ -1015,18 +973,10 @@ function stripToolCallJson(text) {
     .trim();
 }
 
-// O modelo costuma embrulhar o resumo em {"type":"final","text":"..."} com aspas internas sem escape (JSON inválido); sem ferramentas, tira o envelope na mão.
-function unwrapFinal(text) {
-  const parsed = finalText(text);
-  if (parsed !== text) return parsed;
-  const match = /^\s*(?:```(?:json)?\s*)?\{\s*"type"\s*:\s*"final"\s*,\s*"text"\s*:\s*"([\s\S]*?)"\s*\}\s*(?:```)?\s*$/.exec(text);
-  return match ? match[1].replace(/\\(n|t|"|\\)/g, (_, c) => ({ n: "\n", t: "\t", '"': '"', "\\": "\\" })[c]) : text;
-}
-
 function makeCompletion(text, attachments, request) {
   const tools = toolList(request);
   const call = parseToolCall(text, tools);
-  if (!tools.length) text = stripToolCallJson(unwrapFinal(text));
+  if (!tools.length) text = stripToolCallJson(finalText(text));
   const answerText = finalText(text) || (attachments.length ? "O ChatGPT respondeu com um anexo de mídia." : "");
   const response = {
     id: `chatcmpl-${randomBytes(12).toString("hex")}`,
@@ -1138,17 +1088,15 @@ async function handleCompletion(req, res) {
       }
       if (conversation.pendingSubmission?.requestHash === requestHash) {
         requestMessages = { prompt: conversation.pendingSubmission.prompt, files: [] };
+      } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
+        const budget = MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000;
+        const fit = fitHistory(body.messages, budget);
+        requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
+        sentFull = true;
       } else {
-        if (conversation.previousMessages.length && isPrefix(conversation.previousMessages, body.messages)) {
-          const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
-          requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
-          sentFull = !compact;
-        }
-        // Sem prefixo conhecido, ou continuação grande demais (resultado de ferramenta enorme): reenvia o histórico cortado para caber.
-        if (!requestMessages || requestMessages.prompt.length > MAX_PROMPT_CHARS) {
-          requestMessages = fitPrompt(body.messages, tools, body.tool_choice);
-          sentFull = true;
-        }
+        const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
+        requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
+        sentFull = !compact;
       }
       let answer = await submitWithRecovery(sessionId, requestMessages.prompt, requestMessages.files, requestHash, signal);
       let result = makeCompletion(answer.text, answer.attachments, body);
@@ -1162,7 +1110,6 @@ async function handleCompletion(req, res) {
         answer = await submitWithRecovery(sessionId, retryPrompt, [], requestHash, signal, 1);
         result = makeCompletion(answer.text, answer.attachments, body);
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
-          console.warn(JSON.stringify({ event: "tool_call_unparsed", session: sessionId.slice(-8), chars: answer.text.length, head: answer.text.slice(0, 300), tail: answer.text.slice(-200) }));
           result = makeCompletion("A última operação do ChatGPT veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }
@@ -1215,7 +1162,7 @@ async function handleCompletion(req, res) {
       : pageTimeout ? "A página do ChatGPT demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
       : error.message || "Falha ao conversar com o ChatGPT.";
     const code = reviewRequired ? "submission_review_required" : timedOut ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
-    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, detail: String(error.message).slice(0, 200), limit_chars: error.limit_chars, received_chars: error.received_chars }));
+    console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, limit_chars: error.limit_chars, received_chars: error.received_chars }));
     if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
     sendJson(res, status, { error: { message, type: status === 401 ? "authentication_error" : status === 400 ? "invalid_request_error" : "upstream_error", code, param: error.param, limit_chars: error.limit_chars, received_chars: error.received_chars, suggested_max_prompt_chars: error.suggested_max_prompt_chars, retryable: reviewRequired ? false : error.retryable ?? (timedOut || pageTimeout ? true : undefined) } });
   }
@@ -1397,11 +1344,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
     return res.end(html);
   }
-  if (url.pathname.startsWith("/control/")) {
-    // Falha no navegador durante o painel não pode derrubar o processo (antes: rejeição não tratada reiniciava o container).
-    try { return await handleControl(req, res, url); }
-    catch (error) { return sendJson(res, error.status || 503, { error: error.message || "Falha no painel." }); }
-  }
+  if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
     return sendJson(res, 200, { object: "list", data: [{ id: "chatgpt-web", object: "model", created: 0, owned_by: "chatgpt-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: REQUEST_TIMEOUT_MS / 1000, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
