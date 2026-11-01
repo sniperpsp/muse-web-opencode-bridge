@@ -214,7 +214,7 @@ export function fitHistory(messages, budget) {
 }
 
 // Encurta o miolo dos resultados de ferramenta (depois, das mensagens antigas) até as mensagens caberem no orçamento.
-// Nunca mexe nas instruções system/developer nem na última mensagem do usuário.
+// Nunca mexe nas instruções system/developer; a última mensagem do usuário só é encurtada como último recurso.
 export function capMessages(messages, budget) {
   const out = messages.map((message) => ({ ...message }));
   const total = () => out.reduce((sum, message) => sum + JSON.stringify(message).length, 0);
@@ -230,6 +230,7 @@ export function capMessages(messages, budget) {
   for (let guard = 0; guard < 500 && total() > budget; guard++) {
     let index = pick((message) => message.role === "tool");
     if (index < 0) index = pick((message, i) => message.role !== "system" && message.role !== "developer" && i !== lastUser);
+    if (index < 0) index = pick((message) => message.role === "user"); // último recurso: pedido de compactação traz o histórico inteiro na última mensagem
     if (index < 0) break;
     const text = out[index].content;
     const keep = Math.max(1000, text.length - (total() - budget) - 400);

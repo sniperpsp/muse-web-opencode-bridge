@@ -33,7 +33,7 @@ const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
 // Local guardrail, not an assertion about the ChatGPT account's quota.
-const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 60000);
+const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 100000);
 const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
 const FULL_INSTRUCTIONS_EVERY = 6;

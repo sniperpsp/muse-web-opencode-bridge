@@ -5,7 +5,7 @@ services:
       args:
         MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
     environment:
-      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-50000}
+      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-100000}
       MUSE_URL: https://chatgpt.com/
       MUSE_VNC_URL: http://127.0.0.1:4328/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4328&path=websockify
       MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-420000}

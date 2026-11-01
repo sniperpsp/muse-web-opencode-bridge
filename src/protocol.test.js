@@ -359,3 +359,9 @@ test("capMessages encurta resultado gigante de ferramenta e preserva system e ú
   assert.match(capped[2].content, /caracteres omitidos/);
   assert.equal(messages[2].content.length, 90000);
 });
+
+test("capMessages encurta a última mensagem do usuário só quando nada mais resolve", () => {
+  const capped = capMessages([{ role: "system", content: "regras" }, { role: "user", content: "h".repeat(90000) }], 20000);
+  assert.ok(JSON.stringify(capped).length <= 20000);
+  assert.match(capped[1].content, /caracteres omitidos/);
+});
