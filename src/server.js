@@ -693,9 +693,32 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
 
 // Seletores do ChatGPT em um só lugar: se o site mudar, ajustar aqui (ou por MUSE_RESPONSE_SELECTOR). Cada mensagem é um [data-content-search-unit-key] ("…:user" ou "…:assistant"); o texto da resposta fica em [data-markdown-text-style="assistant-message"].
 const STREAMING_SELECTOR = 'button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Parar" i], [data-testid="stop-button"]';
+// Pedidos sem ferramentas (compactação, título) esperam markdown (## Seção, - item); innerText perde os marcadores. A ponte atende um pedido por vez.
+let wantMarkdown = false;
 async function readChatMessages(beforeMessageIds, signal) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || '[data-markdown-text-style="assistant-message"]';
-  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector }) => {
+  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown }) => {
+    const toMarkdown = (root) => {
+      const walk = (el) => {
+        let out = "";
+        for (const n of el.childNodes) {
+          if (n.nodeType === 3) { out += n.textContent; continue; }
+          if (n.nodeType !== 1) continue;
+          const tag = n.tagName.toLowerCase();
+          if (/^h[1-6]$/.test(tag)) out += `\n\n${"#".repeat(Number(tag[1]))} ${walk(n).trim()}\n\n`;
+          else if (tag === "p") out += `\n\n${walk(n).trim()}\n\n`;
+          else if (tag === "ul" || tag === "ol") { let i = 0; out += "\n"; for (const li of n.children) if (li.tagName === "LI") out += `${tag === "ol" ? `${++i}. ` : "- "}${walk(li).trim().replace(/\n+/g, " ")}\n`; out += "\n"; }
+          else if (tag === "pre") out += `\n\n\`\`\`\n${(n.querySelector("code") || n).innerText.replace(/\n$/, "")}\n\`\`\`\n\n`;
+          else if (tag === "code") out += `\`${n.textContent}\``;
+          else if (tag === "strong" || tag === "b") out += `**${walk(n)}**`;
+          else if (tag === "em" || tag === "i") out += `*${walk(n)}*`;
+          else if (tag === "br") out += "\n";
+          else if (tag !== "button" && tag !== "svg") out += walk(n);
+        }
+        return out;
+      };
+      return walk(root).replace(/\n{3,}/g, "\n\n").trim();
+    };
     const previous = new Set(beforeMessageIds);
     const streaming = [...document.querySelectorAll(streamingSelector)].some((el) => el.getBoundingClientRect().width);
     const all = groups.map((group) => ({ group, id: group.getAttribute("data-content-search-unit-key") }));
@@ -711,12 +734,12 @@ async function readChatMessages(beforeMessageIds, signal) {
     return {
       id, role,
       error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
-      text: role === "assistant" ? standaloneJson ? jsonCode : text : "",
+      text: role === "assistant" ? standaloneJson ? jsonCode : wantMarkdown ? toMarkdown(assistant) || text : text : "",
       // Ocupada enquanto o botão "Stop" existe (só vale para a última resposta); sem ele a resposta está terminada.
       busy: role === "assistant" && (!assistant || (streaming && lastAssistant?.id === id)),
     };
     });
-  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR }), signal, "Ler as mensagens novas do ChatGPT");
+  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR, wantMarkdown }), signal, "Ler as mensagens novas do ChatGPT");
 }
 
 // Uma nova mensagem chegou com um envio antigo pendente: se o ChatGPT marcou aquele envio como não entregue, solta o pendente.
@@ -1089,6 +1112,7 @@ async function handleCompletion(req, res) {
       }
       console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "started", queueWaitMs }));
       const tools = toolList(body);
+      wantMarkdown = tools.length === 0;
       const toolsKey = sha(JSON.stringify({ tools: tools.map((tool) => tool.function), system: body.messages.filter((message) => message.role === "system" || message.role === "developer") }));
       let requestMessages;
       let sentFull;
