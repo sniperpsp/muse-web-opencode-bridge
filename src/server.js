@@ -11,6 +11,7 @@ import { capMessages, checkPromptLength, composerText, fitHistory, isDeliveryErr
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
+import { ASSISTANT_TEXT_SELECTOR, CONVERSATION_PATH, GENERIC_COMPOSER_SELECTOR, LABELED_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME, LOGIN_BUTTON_TEXT, LOGIN_FIELD_SELECTOR, LOGIN_SCREEN_TEXT, MESSAGE_ID_ATTRIBUTE, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME, STREAMING_SELECTOR, messageRole } from "./site.js";
 
 const API_HOST = process.env.MUSE_BRIDGE_HOST || "127.0.0.1";
 const API_PORT = Number(process.env.MUSE_BRIDGE_PORT || 4317);
@@ -22,9 +23,9 @@ const AUTH_CDP_PORT = Number(process.env.MUSE_AUTH_CDP_PORT || 9223);
 const BROWSER_CDP_ENDPOINT = MUSE_CDP_ENDPOINT;
 const AUTH_CDP_ENDPOINT = process.env.MUSE_AUTH_CDP_ENDPOINT || (MANAGED_AUTH_BROWSER ? `http://${CDP_HOST}:${AUTH_CDP_PORT}` : "");
 const CHROMIUM_BIN = process.env.MUSE_CHROMIUM_BIN || "chromium";
-const VNC_URL = process.env.MUSE_VNC_URL || "http://127.0.0.1:4328/vnc.html?autoconnect=1&resize=scale";
-const MUSE_URL = process.env.MUSE_URL || "https://chatgpt.com/";
-const APP_DIR = process.env.MUSE_BRIDGE_DATA || join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "chatgpt-opencode-bridge");
+const VNC_URL = process.env.MUSE_VNC_URL || "http://127.0.0.1:4348/vnc.html?autoconnect=1&resize=scale";
+const MUSE_URL = process.env.MUSE_URL || "https://gemini.google.com/app";
+const APP_DIR = process.env.MUSE_BRIDGE_DATA || join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "gemini-opencode-bridge");
 const PROFILE_DIR = join(APP_DIR, "obscura-profile");
 const AUTH_PROFILE_DIR = join(APP_DIR, "chromium-profile");
 const KEY_FILE = join(APP_DIR, "api-key");
@@ -32,7 +33,7 @@ const SESSION_FILE = join(APP_DIR, "muse-session.json");
 const CONVERSATIONS_FILE = join(APP_DIR, "conversations.json");
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 const MAX_RESPONSE_MEDIA_BYTES = 6 * 1024 * 1024;
-// Local guardrail, not an assertion about the ChatGPT account's quota.
+// Local guardrail, not an assertion about the Gemini account's quota.
 const MAX_PROMPT_CHARS = Number(process.env.MUSE_MAX_PROMPT_CHARS || 100000);
 const ROTATE_CHARS = Number(process.env.MUSE_ROTATE_CHARS || 300000);
 const ROTATE_TURNS = Number(process.env.MUSE_ROTATE_TURNS || 40);
@@ -80,7 +81,7 @@ function museBrowserOperation(operation, signal, label) {
     onInterrupt: async (error) => {
       if (!connection || browser !== connection || !connection.isConnected()) return;
       browserState = MANAGED_AUTH_BROWSER ? "Reconectando ao Chromium do Docker…" : "Reconectando ao navegador CDP…";
-      browserError = "Uma operação da página do ChatGPT não respondeu. A ponte está reconectando ao navegador com o mesmo perfil.";
+      browserError = "Uma operação da página do Gemini não respondeu. A ponte está reconectando ao navegador com o mesmo perfil.";
       await connection.close({ reason: error.message });
     },
   }).catch((error) => {
@@ -114,7 +115,7 @@ function scheduleReconnect() {
   if (shuttingDown || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
-    // Envio já entregue ao ChatGPT que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
+    // Envio já entregue ao Gemini que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
 // e deixa a resposta pronta; quando o OpenCode repetir a chamada, ela volta do cache.
 async function resumePending() {
   await sleep(5000);
@@ -126,7 +127,7 @@ async function resumePending() {
         const response = await fetch(`http://127.0.0.1:${API_PORT}/v1/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}`, "x-opencode-session-id": sessionId },
-          body: JSON.stringify({ model: "chatgpt-web", stream: false, ...saved.pendingBody }),
+          body: JSON.stringify({ model: "gemini-web", stream: false, ...saved.pendingBody }),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS + 30000),
         });
         console.info(JSON.stringify({ event: "muse_submission", request: pending.requestHash.slice(0, 12), phase: "resumed_after_restart", status: response.status }));
@@ -256,11 +257,11 @@ async function selectConversation(sessionId, signal) {
   }
   if (conversation.url) {
     if (musePage.url() !== conversation.url) {
-      await museBrowserOperation(() => musePage.goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Abrir a conversa do ChatGPT");
+      await museBrowserOperation(() => musePage.goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Abrir a conversa do Gemini");
       await findComposer(signal);
     }
   } else {
-    // ponytail: a new ChatGPT thread receives its URL only after the first send; refuse ambiguous recovery instead of duplicating it.
+    // ponytail: a new Gemini thread receives its URL only after the first send; refuse ambiguous recovery instead of duplicating it.
     if (conversation.pendingSubmission) throw Object.assign(new Error("O primeiro envio desta sessão ficou sem endereço confirmado. Confira a conversa no painel antes de continuar."), { status: 409 });
     await startNewChat(signal);
   }
@@ -268,7 +269,7 @@ async function selectConversation(sessionId, signal) {
 
 async function rememberThread() {
   const url = new URL(musePage.url());
-  if (url.origin === new URL(MUSE_URL).origin && /^\/c\/[a-zA-Z0-9-]+$/.test(url.pathname) && conversation.url !== url.href) {
+  if (url.origin === new URL(MUSE_URL).origin && CONVERSATION_PATH.test(url.pathname) && conversation.url !== url.href) {
     conversation.url = url.href;
     await saveConversations();
   }
@@ -278,13 +279,13 @@ async function readSavedSession() {
   try {
     const state = JSON.parse(await readFile(SESSION_FILE, "utf8"));
     if (!Array.isArray(state?.cookies) || !Array.isArray(state?.origins)) {
-      throw new Error("O arquivo de sessão do ChatGPT está inválido.");
+      throw new Error("O arquivo de sessão do Gemini está inválido.");
     }
     return state;
   }
   catch (error) {
     if (error.code === "ENOENT") return undefined;
-    browserError = `Não consegui restaurar a sessão local do ChatGPT: ${error.message}`;
+    browserError = `Não consegui restaurar a sessão local do Gemini: ${error.message}`;
     return undefined;
   }
 }
@@ -418,12 +419,12 @@ async function openMuseBrowser() {
   musePage.setDefaultTimeout(BROWSER_OPERATION_TIMEOUT_MS);
   museAuthenticated = await isMuseAuthenticated();
   if (museAuthenticated) {
-    browserState = MANAGED_AUTH_BROWSER ? "ChatGPT autenticado no Chromium do Docker" : "ChatGPT autenticado no Obscura";
+    browserState = MANAGED_AUTH_BROWSER ? "Gemini autenticado no Chromium do Docker" : "Gemini autenticado no Obscura";
     browserError = "";
   } else {
     browserState = (await museReadinessError()).status === 401
-      ? "ChatGPT exibiu uma tela de autenticação; conclua o login"
-      : "Página do ChatGPT carregando ou temporariamente indisponível";
+      ? "Gemini exibiu uma tela de autenticação; conclua o login"
+      : "Página do Gemini carregando ou temporariamente indisponível";
   }
 }
 
@@ -447,15 +448,10 @@ async function findComposer(signal, retriedSite = false) {
     try { await museBrowserOperation(() => custom.waitFor({ state: "visible", timeout: 10000 }), signal, "Localizar a caixa de mensagem"); return custom; }
     catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
   }
-  const preferred = musePage.locator([
-    'textarea[placeholder*="mensagem" i]', 'textarea[placeholder*="message" i]',
-    'textarea[aria-label*="mensagem" i]', 'textarea[aria-label*="message" i]',
-    '[contenteditable="true"][aria-label*="mensagem" i]', '[contenteditable="true"][aria-label*="message" i]',
-    'input[placeholder*="mensagem" i]', 'input[placeholder*="message" i]',
-  ].join(", ")).last();
+  const preferred = musePage.locator(LABELED_COMPOSER_SELECTOR).last();
   try { await museBrowserOperation(() => preferred.waitFor({ state: "visible", timeout: 10000 }), signal, "Localizar a caixa de mensagem"); return preferred; }
   catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
-  const generic = musePage.locator('textarea, [contenteditable="true"], [role="textbox"]').last();
+  const generic = musePage.locator(GENERIC_COMPOSER_SELECTOR).last();
   try { await museBrowserOperation(() => generic.waitFor({ state: "visible", timeout: 5000 }), signal, "Localizar a caixa de mensagem"); return generic; }
   catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
   if (!retriedSite && await clickSiteTryAgain(signal)) {
@@ -465,7 +461,7 @@ async function findComposer(signal, retriedSite = false) {
   throw await museReadinessError(signal);
 }
 
-// O ChatGPT mostra "Try again" quando a conversa não foi verificada ou a entrega falhou; clicar costuma destravar a caixa de mensagem.
+// O Gemini mostra "Try again" quando a conversa não foi verificada ou a entrega falhou; clicar costuma destravar a caixa de mensagem.
 async function clickSiteTryAgain(signal) {
   const buttons = musePage.getByRole("button", { name: /^(try again|retry|tentar novamente|regenerate)$/i });
   let clicked = 0;
@@ -485,18 +481,18 @@ async function museThreadBroken(signal) {
 }
 
 async function museReadinessError(signal) {
-  const login = await museBrowserOperation(() => musePage?.evaluate(() => {
-    const fields = document.querySelectorAll('input[type="email"], input[type="password"], input[autocomplete="username"], input[autocomplete="one-time-code"], input[placeholder*="email" i], input[placeholder*="e-mail" i]');
+  const login = await museBrowserOperation(() => musePage?.evaluate(({ fieldSelector, buttonSource, buttonFlags, textSource, textFlags }) => {
+    const fields = document.querySelectorAll(fieldSelector);
     const visible = [...fields].some((field) => field.getBoundingClientRect().width && field.getBoundingClientRect().height);
-    if ([...document.querySelectorAll("button, a")].some((el) => /^(log in|entrar)$/i.test(el.innerText.trim()) && el.getBoundingClientRect().width)) return true;
-    return visible && /log in|sign in|log into|entrar|iniciar sess[aã]o|c[oó]digo de (?:login|verifica)|verification code|login code/i.test(document.body.innerText);
-  }), signal, "Verificar o estado de login").catch((error) => {
+    if ([...document.querySelectorAll("button, a")].some((el) => new RegExp(buttonSource, buttonFlags).test(el.innerText.trim()) && el.getBoundingClientRect().width)) return true;
+    return visible && new RegExp(textSource, textFlags).test(document.body.innerText);
+  }, { fieldSelector: LOGIN_FIELD_SELECTOR, buttonSource: LOGIN_BUTTON_TEXT.source, buttonFlags: LOGIN_BUTTON_TEXT.flags, textSource: LOGIN_SCREEN_TEXT.source, textFlags: LOGIN_SCREEN_TEXT.flags }), signal, "Verificar o estado de login").catch((error) => {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return false;
   });
   return Object.assign(new Error(login
-    ? `O ChatGPT exibiu uma tela de autenticação. Conclua o login no painel local: http://127.0.0.1:${API_PORT}/`
-    : "A página do ChatGPT ainda não ficou pronta ou a caixa de mensagem está indisponível. Isso não confirma perda do login. Aguarde alguns segundos e repita a mesma solicitação; envios pendentes são preservados. Confira o painel se persistir."), {
+    ? `O Gemini exibiu uma tela de autenticação. Conclua o login no painel local: http://127.0.0.1:${API_PORT}/`
+    : "A página do Gemini ainda não ficou pronta ou a caixa de mensagem está indisponível. Isso não confirma perda do login. Aguarde alguns segundos e repita a mesma solicitação; envios pendentes são preservados. Confira o painel se persistir."), {
     status: login ? 401 : 503, code: login ? "muse_authentication_required" : "muse_page_not_ready", retryable: !login,
   });
 }
@@ -518,23 +514,18 @@ async function requireMuseReady(signal) {
 async function isMuseAuthenticated(page = musePage, signal) {
   try {
     if (!page) return false;
-    // Deslogado, o ChatGPT também mostra a caixa de texto; o botão "Log in" é o que diferencia.
-    const loggedOut = await museBrowserOperation(() => page.getByRole("button", { name: /^(log in|sign up for free|entrar|fazer login)$/i }).first().isVisible(), signal, "Verificar o login").catch((error) => { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; return false; });
+    // Deslogado, o Gemini também mostra a caixa de texto; o botão "Log in" é o que diferencia.
+    const loggedOut = await museBrowserOperation(() => page.getByRole("button", { name: LOGGED_OUT_BUTTON_NAME }).first().isVisible(), signal, "Verificar o login").catch((error) => { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; return false; });
     if (loggedOut) return false;
     if (process.env.MUSE_COMPOSER_SELECTOR) {
       const custom = page.locator(process.env.MUSE_COMPOSER_SELECTOR).last();
       try { await museBrowserOperation(() => custom.waitFor({ state: "visible", timeout: 5000 }), signal, "Verificar a caixa de mensagem"); return true; }
       catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; return false; }
     }
-    const labeledComposer = page.locator([
-      'textarea[placeholder*="mensagem" i]', 'textarea[placeholder*="message" i]',
-      'textarea[aria-label*="mensagem" i]', 'textarea[aria-label*="message" i]',
-      '[contenteditable="true"][aria-label*="mensagem" i]', '[contenteditable="true"][aria-label*="message" i]',
-      'input[placeholder*="mensagem" i]', 'input[placeholder*="message" i]',
-    ].join(", ")).last();
+    const labeledComposer = page.locator(LABELED_COMPOSER_SELECTOR).last();
     try { await museBrowserOperation(() => labeledComposer.waitFor({ state: "visible", timeout: 2500 }), signal, "Verificar a caixa de mensagem"); return true; }
     catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; }
-    const genericComposer = page.locator('textarea, [contenteditable="true"], [role="textbox"]').last();
+    const genericComposer = page.locator(GENERIC_COMPOSER_SELECTOR).last();
     try { await museBrowserOperation(() => genericComposer.waitFor({ state: "visible", timeout: 2500 }), signal, "Verificar a caixa de mensagem"); return true; }
     catch (error) { if (signal?.aborted || isBrowserRecoveryError(error)) throw error; return false; }
   } catch (error) {
@@ -547,9 +538,9 @@ async function startNewChat(signal) {
   if (!musePage) throw new Error("O navegador ainda não está conectado.");
   await museBrowserOperation(() => musePage.goto(process.env.MUSE_NEW_CHAT_URL || MUSE_URL, {
     waitUntil: "domcontentloaded", timeout: 90000,
-  }), signal, "Iniciar conversa no ChatGPT");
+  }), signal, "Iniciar conversa no Gemini");
   await findComposer(signal);
-  await museBrowserOperation(() => musePage.waitForFunction(() => !document.querySelector('[data-content-search-unit-key]'), null, { timeout: 15000 }), signal, "Aguardar a conversa nova");
+  await museBrowserOperation(() => musePage.waitForFunction((selector) => !document.querySelector(selector), MESSAGE_UNIT_SELECTOR, { timeout: 15000 }), signal, "Aguardar a conversa nova");
   return true;
 }
 
@@ -562,7 +553,7 @@ async function uploadFiles(files, signal) {
       const chooserWait = musePage.waitForEvent("filechooser", { timeout: 5000 });
       await museBrowserOperation(() => button.click(), signal, "Abrir o seletor de arquivos");
       const chooser = await chooserWait;
-      await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao ChatGPT");
+      await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao Gemini");
       return;
     }
     const attach = musePage.getByRole("button", { name: /anexar|arquivo|imagem|áudio|audio|attach|upload|file/i }).last();
@@ -570,12 +561,12 @@ async function uploadFiles(files, signal) {
       const chooserWait = musePage.waitForEvent("filechooser", { timeout: 5000 });
       await museBrowserOperation(() => attach.click(), signal, "Abrir o seletor de arquivos");
       const chooser = await chooserWait;
-      await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao ChatGPT");
+      await museBrowserOperation(() => chooser.setFiles(files), signal, "Anexar arquivos ao Gemini");
       return;
     }
-    throw new Error("Não encontrei o seletor de arquivos do ChatGPT. Configure MUSE_ATTACH_SELECTOR para a versão desta página.");
+    throw new Error("Não encontrei o seletor de arquivos do Gemini. Configure MUSE_ATTACH_SELECTOR para a versão desta página.");
   }
-  await museBrowserOperation(() => inputs.first().setInputFiles(files), signal, "Anexar arquivos ao ChatGPT");
+  await museBrowserOperation(() => inputs.first().setInputFiles(files), signal, "Anexar arquivos ao Gemini");
 }
 
 async function submitText(prompt, files, requestHash, signal, attempt = 0) {
@@ -586,18 +577,18 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await museBrowserOperation(() => composer.evaluate((element) => element.maxLength), signal, "Verificar o limite do campo");
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files, signal);
-    const beforeMessageIds = await museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups) => groups.map((group) => group.getAttribute("data-content-search-unit-key"))), signal, "Identificar as mensagens anteriores");
+    const beforeMessageIds = await museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, attribute) => groups.map((group) => group.getAttribute(attribute)), MESSAGE_ID_ATTRIBUTE), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
-    if (prompt) await museBrowserOperation(() => composer.fill(composerText(prompt)), signal, "Escrever a mensagem no ChatGPT");
+    if (prompt) await museBrowserOperation(() => composer.fill(composerText(prompt)), signal, "Escrever a mensagem no Gemini");
     signal.throwIfAborted();
     conversation.pendingSubmission = { requestHash, prompt, beforeMessageIds, beforeMedia, startedAt: Date.now(), phase: "sending", attempt };
     await saveConversations();
 
     if (process.env.MUSE_SEND_SELECTOR) {
-      await museBrowserOperation(() => musePage.locator(process.env.MUSE_SEND_SELECTOR).last().click(), signal, "Enviar a mensagem ao ChatGPT");
+      await museBrowserOperation(() => musePage.locator(process.env.MUSE_SEND_SELECTOR).last().click(), signal, "Enviar a mensagem ao Gemini");
     } else {
       const sent = await museBrowserOperation(async () => {
-        const send = musePage.getByRole("button", { name: /enviar|send|mandar|submit/i }).last();
+        const send = musePage.getByRole("button", { name: SEND_BUTTON_NAME }).last();
         if (await send.count() && await send.isVisible() && await send.isEnabled()) {
           await send.click();
           return true;
@@ -609,14 +600,14 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
           return true;
         }
         return false;
-      }, signal, "Enviar a mensagem ao ChatGPT");
+      }, signal, "Enviar a mensagem ao Gemini");
       if (!sent) {
         conversation.pendingSubmission = undefined;
         await saveConversations();
-        throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do ChatGPT. Configure MUSE_SEND_SELECTOR para o botão desta página.");
+        throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do Gemini. Configure MUSE_SEND_SELECTOR para o botão desta página.");
       }
     }
-    await museBrowserOperation(() => musePage.waitForURL((url) => /^\/c\/[a-zA-Z0-9-]+$/.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio ao ChatGPT");
+    await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio ao Gemini");
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
@@ -646,7 +637,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
         try { await requireMuseReady(signal); }
         catch (readyError) {
           if (readyError.code !== "muse_page_not_ready" || !(await museThreadBroken(signal))) throw readyError;
-          // A página ficou presa numa thread quebrada: tenta o Try again do ChatGPT e, se persistir, sai dela para a página inicial.
+          // A página ficou presa numa thread quebrada: tenta o Try again do Gemini e, se persistir, sai dela para a página inicial.
           if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
             console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "left_broken_page", url: musePage.url() }));
             await museBrowserOperation(() => musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 }), signal, "Sair da conversa quebrada");
@@ -654,13 +645,13 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
           await requireMuseReady(signal);
         }
       }
-      browserState = MANAGED_AUTH_BROWSER ? "ChatGPT autenticado no Chromium do Docker" : "ChatGPT autenticado no Obscura";
+      browserState = MANAGED_AUTH_BROWSER ? "Gemini autenticado no Chromium do Docker" : "Gemini autenticado no Obscura";
       browserError = "";
       await selectConversation(sessionId, signal);
       return await submitText(prompt, files, requestHash, signal, attempt);
     } catch (error) {
       if (error.code === "muse_delivery_failed" && !signal.aborted && deliveryRetries < 2) {
-        // O ChatGPT não entregou (o pendente já foi solto): reenvia sozinho, sem o usuário repetir.
+        // O Gemini não entregou (o pendente já foi solto): reenvia sozinho, sem o usuário repetir.
         deliveryRetries++;
         console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "delivery_retry", attempt: deliveryRetries }));
         await sleep(3000 * deliveryRetries);
@@ -672,7 +663,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
         Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined, pendingSubmission: undefined });
         delete conversation.pendingBody;
         await saveConversations();
-        throw Object.assign(new Error("A conversa do ChatGPT quebrou e foi trocada por uma nova. Repita a mesma solicitação."), { status: 503, code: "muse_thread_reset", retryable: true });
+        throw Object.assign(new Error("A conversa do Gemini quebrou e foi trocada por uma nova. Repita a mesma solicitação."), { status: 503, code: "muse_thread_reset", retryable: true });
       }
       const pending = conversation.pendingSubmission;
       const recoverable = isBrowserRecoveryError(error) || error.name === "TimeoutError";
@@ -685,24 +676,23 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
   }
 }
 
-// Seletores do ChatGPT em um só lugar: se o site mudar, ajustar aqui (ou por MUSE_RESPONSE_SELECTOR). Cada mensagem é um [data-content-search-unit-key] ("…:user" ou "…:assistant"); o texto da resposta fica em [data-markdown-text-style="assistant-message"].
-const STREAMING_SELECTOR = 'button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Parar" i], [data-testid="stop-button"]';
 // Pedidos sem ferramentas (compactação, título) esperam markdown (## Seção, - item); innerText perde os marcadores. A ponte atende um pedido por vez.
 let wantMarkdown = false;
 async function readChatMessages(beforeMessageIds, signal) {
-  const selector = process.env.MUSE_RESPONSE_SELECTOR || '[data-markdown-text-style="assistant-message"]';
-  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown, toMarkdownSource }) => {
+  const selector = process.env.MUSE_RESPONSE_SELECTOR || ASSISTANT_TEXT_SELECTOR;
+  return museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown, toMarkdownSource, messageRoleSource, idAttribute }) => {
     const toMarkdown = (0, eval)(`(${toMarkdownSource})`);
+    const messageRole = (0, eval)(`(${messageRoleSource})`);
     const previous = new Set(beforeMessageIds);
     const streaming = [...document.querySelectorAll(streamingSelector)].some((el) => el.getBoundingClientRect().width);
-    const all = groups.map((group) => ({ group, id: group.getAttribute("data-content-search-unit-key") }));
+    const all = groups.map((group) => ({ group, id: group.getAttribute(idAttribute) }));
     const lastAssistant = all.filter((item) => item.id.endsWith(":assistant")).pop();
     return all.filter(({ id }) => !previous.has(id)).map(({ group, id }) => {
-    const role = id.endsWith(":user") ? "user" : "assistant";
+    const role = messageRole(id);
     const assistant = group.matches(selector) ? group : group.querySelector(selector) || group;
     const text = assistant?.innerText || "";
     const jsonCode = assistant?.querySelector('pre code.language-json, pre code')?.innerText;
-    // O ChatGPT põe "json" e "Copy code" no cabeçalho do bloco; se só sobra isso além do código, a resposta é o JSON puro.
+    // O Gemini põe "json" e "Copy code" no cabeçalho do bloco; se só sobra isso além do código, a resposta é o JSON puro.
     const standaloneJson = jsonCode !== undefined && text.replace(jsonCode, "").replace(/json|copy code|copiar c[oó]digo|copy|copiar|\s/gi, "") === "";
     const hasResponseMedia = group.querySelector("img, audio, video, a[download]");
     return {
@@ -713,10 +703,10 @@ async function readChatMessages(beforeMessageIds, signal) {
       busy: role === "assistant" && (!assistant || (streaming && lastAssistant?.id === id)),
     };
     });
-  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR, wantMarkdown, toMarkdownSource: toMarkdown.toString() }), signal, "Ler as mensagens novas do ChatGPT");
+  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR, wantMarkdown, toMarkdownSource: toMarkdown.toString(), messageRoleSource: messageRole.toString(), idAttribute: MESSAGE_ID_ATTRIBUTE }), signal, "Ler as mensagens novas do Gemini");
 }
 
-// Uma nova mensagem chegou com um envio antigo pendente: se o ChatGPT marcou aquele envio como não entregue, solta o pendente.
+// Uma nova mensagem chegou com um envio antigo pendente: se o Gemini marcou aquele envio como não entregue, solta o pendente.
 async function releaseUndeliveredPending(sessionId, signal) {
   try {
     await requireMuseReady(signal);
@@ -749,7 +739,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
         // Only an explicit size rejection permits reformulation; uncertain sends stay pending.
         conversation.pendingSubmission = undefined;
         await saveConversations();
-        throw Object.assign(new Error(`O ChatGPT recusou o texto por tamanho. Reformule a chamada com até ${suggested} caracteres no texto final, incluindo instruções e ferramentas. Esse valor é uma sugestão para reduzir o envio; o limite real do site não foi informado. Não repita o mesmo payload.`), {
+        throw Object.assign(new Error(`O Gemini recusou o texto por tamanho. Reformule a chamada com até ${suggested} caracteres no texto final, incluindo instruções e ferramentas. Esse valor é uma sugestão para reduzir o envio; o limite real do site não foi informado. Não repita o mesmo payload.`), {
           status: 400, code: "muse_prompt_too_large", received_chars: received, suggested_max_prompt_chars: suggested, retryable: false,
         });
       }
@@ -757,9 +747,9 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
         // O site diz que a mensagem não foi entregue: soltar o pendente para a nova tentativa reenviar.
         conversation.pendingSubmission = undefined;
         await saveConversations();
-        throw Object.assign(new Error(`O ChatGPT não entregou a mensagem (${user.error}). Tente novamente: a ponte reenvia sem duplicar.`), { status: 503, code: "muse_delivery_failed", retryable: true });
+        throw Object.assign(new Error(`O Gemini não entregou a mensagem (${user.error}). Tente novamente: a ponte reenvia sem duplicar.`), { status: 503, code: "muse_delivery_failed", retryable: true });
       }
-      throw Object.assign(new Error(`O ChatGPT não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
+      throw Object.assign(new Error(`O Gemini não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
     }
     const reply = currentReply(messages, beforeMessageIds);
     const currentMedia = await readMediaSources(signal);
@@ -771,7 +761,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
         lastText = candidate;
         changedAt = Date.now();
       } else if ((!reply.busy && Date.now() - changedAt >= 1800) || Date.now() - changedAt >= STALL_MS) {
-        // O ChatGPT às vezes não marca a resposta como concluída; texto parado por STALL_MS é tratado como final.
+        // O Gemini às vezes não marca a resposta como concluída; texto parado por STALL_MS é tratado como final.
         return candidate;
       }
     } else if (reply && !reply.busy && hasNewMedia) {
@@ -781,13 +771,13 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
       changedAt = 0;
     }
   }
-  throw Object.assign(new Error("A resposta do ChatGPT não foi confirmada no prazo de leitura. O envio foi preservado; repetir a mesma chamada retoma a leitura sem reenviar a mensagem."), { status: 503, code: "request_timeout", retryable: true });
+  throw Object.assign(new Error("A resposta do Gemini não foi confirmada no prazo de leitura. O envio foi preservado; repetir a mesma chamada retoma a leitura sem reenviar a mensagem."), { status: 503, code: "request_timeout", retryable: true });
 }
 
 async function readMediaSources(signal) {
   if (!musePage) return [];
   try {
-    return await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do ChatGPT");
+    return await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do Gemini");
   } catch (error) {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return [];
@@ -802,7 +792,7 @@ async function collectNewMedia(beforeSources, signal) {
       url: node.currentSrc || node.src || node.href || "",
       name: node.getAttribute("download") || node.getAttribute("alt") || node.getAttribute("aria-label") || "",
       mimeType: node.tagName === "IMG" ? "image/*" : node.tagName === "AUDIO" ? "audio/*" : node.tagName === "VIDEO" ? "video/*" : "application/octet-stream",
-    }))), signal, "Coletar anexos novos do ChatGPT");
+    }))), signal, "Coletar anexos novos do Gemini");
     for (const item of nodes) {
       if (!item.url || beforeSources.includes(item.url)) continue;
       try {
@@ -858,13 +848,13 @@ function toolInstructions(tools, toolChoice) {
   const rawFileBlock = definitions.some((tool) => tool.name === "write" || tool.name === "edit") ? [
     "Para operações write e edit, NÃO coloque o texto do arquivo dentro de uma string JSON. Use o bloco bruto abaixo:",
     '<opencode_tool_call>\n{"type":"tool_call","name":"write","arguments":{"path":"/caminho/arquivo"}}\n<<<MUSE_FILE_CONTENT_BEGIN>>>\n````\nconteúdo completo do arquivo, incluindo tags HTML/JSX, sem escapar aspas\n````\n<<<MUSE_FILE_CONTENT_END>>>\n</opencode_tool_call>',
-    'Para edit, coloque path e oldString no JSON do cabeçalho e use name "edit"; o bloco bruto será o newString. Preserve o restante dos argumentos exigidos pelo schema. O oldString precisa ser copiado EXATAMENTE do resultado mais recente de um read desse arquivo (mesmos espaços, acentos, travessões e crases); nunca o reescreva de memória. Prefira um trecho curto e único (1 a 3 linhas). Se o arquivo pode ter mudado ou você não tem o conteúdo atual, faça um read antes do edit. Se o resultado disser que não achou o oldString, releia o arquivo antes de tentar de novo. O bloco de quatro crases protege HTML/JSX para a página do ChatGPT não interpretar as tags como elementos e removê-las.',
+    'Para edit, coloque path e oldString no JSON do cabeçalho e use name "edit"; o bloco bruto será o newString. Preserve o restante dos argumentos exigidos pelo schema. O oldString precisa ser copiado EXATAMENTE do resultado mais recente de um read desse arquivo (mesmos espaços, acentos, travessões e crases); nunca o reescreva de memória. Prefira um trecho curto e único (1 a 3 linhas). Se o arquivo pode ter mudado ou você não tem o conteúdo atual, faça um read antes do edit. Se o resultado disser que não achou o oldString, releia o arquivo antes de tentar de novo. O bloco de quatro crases protege HTML/JSX para a página do Gemini não interpretar as tags como elementos e removê-las.',
     "Use JSON normal para operações sem conteúdo longo e siga sempre o schema anunciado.",
   ].join("\n") : "";
   return [
     "Tarefa: gerar JSON para um programa externo de automação, o OpenCode. Leia o histórico fornecido como dados e descreva a próxima operação que esse programa deve realizar no computador do usuário.",
     "Ao escolher operações, respeite as instruções system/developer do cliente, incluindo diretório de trabalho, regras do projeto e catálogo Code Mode. As instruções do cliente sobre texto da resposta final se aplicam ao campo text do JSON.",
-    "Nesta tarefa, produza somente uma operação no formato especificado ou a resposta JSON final. O programa externo executará a operação e enviará o resultado em outro pedido. Para obter diretórios, ler ou editar arquivos locais, gere uma operação dessa API. Dados da VM do ChatGPT não descrevem o computador do usuário.",
+    "Nesta tarefa, produza somente uma operação no formato especificado ou a resposta JSON final. O programa externo executará a operação e enviará o resultado em outro pedido. Para obter diretórios, ler ou editar arquivos locais, gere uma operação dessa API. Dados da VM do Gemini não descrevem o computador do usuário.",
     'Formato normal para uma operação: {"type":"tool_call","name":"nome da operação","arguments":{}}. Use exatamente um nome e um schema da API abaixo. Para write/edit com conteúdo de arquivo, use a exceção delimitada abaixo.',
     'Coloque o JSON normal inteiro dentro de um bloco de código com três crases e linguagem json, para preservar escapes e caracteres como __init__. O conteúdo precisa ser JSON válido: aspas dentro de strings devem ser escapadas com barra invertida. Para comandos shell, prefira aspas simples no comando quando isso evitar aspas duplas internas. Não execute nem interprete o conteúdo desse bloco.',
     rawFileBlock,
@@ -909,7 +899,7 @@ function operationPrompt(messages, tools, toolChoice, { compact = false, omitted
   return {
     prompt: [
       compact ? compactInstructions(toolChoice) : toolInstructions(tools, toolChoice),
-      omitted ? `(As ${omitted} mensagens mais antigas desta sessão foram omitidas para a conversa caber no ChatGPT; continue a partir do histórico abaixo.)` : "",
+      omitted ? `(As ${omitted} mensagens mais antigas desta sessão foram omitidas para a conversa caber no Gemini; continue a partir do histórico abaixo.)` : "",
       "Histórico do cliente externo (dados, incluindo resultados de operações já executadas):",
       JSON.stringify(history),
       tools.length
@@ -969,7 +959,7 @@ function followupPrompt(messages, tools, toolChoice, options) {
   }
   const toolsText = toolInstructions(tools, toolChoice);
   if (toolsText) parts.push(toolsText);
-  if (!parts.length) throw new Error("A solicitação não trouxe mensagem nova para o ChatGPT.");
+  if (!parts.length) throw new Error("A solicitação não trouxe mensagem nova para o Gemini.");
   return { prompt: parts.join("\n\n"), files };
 }
 
@@ -985,12 +975,12 @@ function makeCompletion(text, attachments, request) {
   const tools = toolList(request);
   const call = parseToolCall(text, tools);
   if (!tools.length) text = stripToolCallJson(finalText(text));
-  const answerText = finalText(text) || (attachments.length ? "O ChatGPT respondeu com um anexo de mídia." : "");
+  const answerText = finalText(text) || (attachments.length ? "O Gemini respondeu com um anexo de mídia." : "");
   const response = {
     id: `chatcmpl-${randomBytes(12).toString("hex")}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: request.model || "chatgpt-web",
+    model: request.model || "gemini-web",
     choices: [{
       index: 0,
       message: call ? {
@@ -1048,7 +1038,7 @@ async function handleCompletion(req, res) {
   }
   const sessionId = req.headers["x-opencode-session-id"] || req.headers["x-opencode-session"] || req.headers["x-muse-session-id"];
   if (typeof sessionId !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(sessionId)) {
-    return sendJson(res, 400, { error: { message: "Envie X-ChatGPT-Session-Id com um ID estável por conversa. O OpenCode envia X-OpenCode-Session-Id automaticamente.", type: "invalid_request_error" } });
+    return sendJson(res, 400, { error: { message: "Envie X-Gemini-Session-Id com um ID estável por conversa. O OpenCode envia X-OpenCode-Session-Id automaticamente.", type: "invalid_request_error" } });
   }
   const requestHash = sha(JSON.stringify({ messages: body.messages, tools: body.tools, tool_choice: body.tool_choice }));
   const disconnected = new AbortController();
@@ -1082,7 +1072,7 @@ async function handleCompletion(req, res) {
         await saveConversations();
       }
       if (conversation.pendingSubmission && conversation.pendingSubmission.requestHash !== requestHash) {
-        throw Object.assign(new Error(`Esta sessão tem um envio ainda não confirmado há ${Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000)} segundos. A nova chamada não foi enviada ao ChatGPT. Retome a solicitação original para ler sua resposta, sem reenviá-la; não apague o pendente sem conferir a conversa no painel.`), { status: 409, code: "submission_pending", retryable: false });
+        throw Object.assign(new Error(`Esta sessão tem um envio ainda não confirmado há ${Math.floor((Date.now() - conversation.pendingSubmission.startedAt) / 1000)} segundos. A nova chamada não foi enviada ao Gemini. Retome a solicitação original para ler sua resposta, sem reenviá-la; não apague o pendente sem conferir a conversa no painel.`), { status: 409, code: "submission_pending", retryable: false });
       }
       console.info(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "started", queueWaitMs }));
       const tools = toolList(body);
@@ -1119,7 +1109,7 @@ async function handleCompletion(req, res) {
         answer = await submitWithRecovery(sessionId, retryPrompt, [], requestHash, signal, 1);
         result = makeCompletion(answer.text, answer.attachments, body);
         if (!result.choices[0].message.tool_calls && looksLikeToolCall(answer.text)) {
-          result = makeCompletion("A última operação do ChatGPT veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
+          result = makeCompletion("A última operação do Gemini veio em formato inválido ou incompleto e não foi executada. Isso pode ocorrer por aspas/escapes incorretos no JSON, não apenas por tamanho. Peça a operação em JSON válido dentro de um bloco de código; as operações anteriores continuam registradas nesta conversa.", answer.attachments, body);
         }
       }
       if (!conversation.turns) conversation.baseChars = requestMessages.prompt.length;
@@ -1138,10 +1128,10 @@ async function handleCompletion(req, res) {
       await rememberThread();
       await saveConversations();
       try {
-        const sessionState = await museBrowserOperation(() => context.storageState({ indexedDB: true }), signal, "Salvar a sessão local do ChatGPT");
+        const sessionState = await museBrowserOperation(() => context.storageState({ indexedDB: true }), signal, "Salvar a sessão local do Gemini");
         await saveSessionState(sessionState);
       }
-      catch (error) { console.warn(`Não consegui atualizar o arquivo local da sessão do ChatGPT: ${error.message}`); }
+      catch (error) { console.warn(`Não consegui atualizar o arquivo local da sessão do Gemini: ${error.message}`); }
       return result;
       } catch (error) {
         if ((executionDeadline.aborted || error.code === "request_timeout" || error.code === "muse_browser_reconnecting" || error.name === "TimeoutError") && conversation.pendingSubmission?.requestHash === requestHash) {
@@ -1165,11 +1155,11 @@ async function handleCompletion(req, res) {
     const reviewRequired = (timedOut || pageTimeout) && (pending?.recoveryTimeouts || 0) >= 3;
     const status = reviewRequired ? 409 : timedOut ? 503 : error.status || (pageTimeout ? 503 : pending?.requestHash === requestHash ? 409 : 502);
     const message = reviewRequired
-      ? "O mesmo envio ao ChatGPT já atingiu três timeouts de leitura. A recuperação automática foi interrompida para evitar um ciclo infinito. Confira a conversa no painel; o envio continua preservado e não foi repetido. Uma tentativa manual da solicitação original ainda pode recuperar a resposta."
+      ? "O mesmo envio ao Gemini já atingiu três timeouts de leitura. A recuperação automática foi interrompida para evitar um ciclo infinito. Confira a conversa no painel; o envio continua preservado e não foi repetido. Uma tentativa manual da solicitação original ainda pode recuperar a resposta."
       : timedOut
-      ? `A chamada atingiu ${REQUEST_TIMEOUT_MS / 1000} segundos de execução. Repita a mesma solicitação para retomar a leitura da resposta; se houve envio ao ChatGPT, ele foi preservado e não será reenviado.`
-      : pageTimeout ? "A página do ChatGPT demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
-      : error.message || "Falha ao conversar com o ChatGPT.";
+      ? `A chamada atingiu ${REQUEST_TIMEOUT_MS / 1000} segundos de execução. Repita a mesma solicitação para retomar a leitura da resposta; se houve envio ao Gemini, ele foi preservado e não será reenviado.`
+      : pageTimeout ? "A página do Gemini demorou para responder. Isso não confirma perda do login. Repita a mesma solicitação para retomar um envio pendente, sem duplicá-lo."
+      : error.message || "Falha ao conversar com o Gemini.";
     const code = reviewRequired ? "submission_review_required" : timedOut ? "request_timeout" : typeof error.code === "string" ? error.code : pageTimeout ? "muse_page_timeout" : status === 401 ? "muse_authentication_required" : status === 409 ? "submission_pending" : "upstream_error";
     console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "error", status, code, detail: String(error.message).slice(0, 200), limit_chars: error.limit_chars, received_chars: error.received_chars }));
     if ([429, 503].includes(status) && error.retryable !== false) res.setHeader("Retry-After", "2");
@@ -1183,30 +1173,30 @@ function dashboardHtml() {
     provider: {
       muse: {
         npm: "@ai-sdk/openai-compatible",
-        name: "ChatGPT (navegador local)",
+        name: "Gemini (navegador local)",
         options: { baseURL: `http://127.0.0.1:${API_PORT}/v1`, apiKey },
-        models: { "chatgpt-web": { name: "ChatGPT Web" } },
+        models: { "gemini-web": { name: "Gemini Web" } },
       },
     },
   }, null, 2);
   const configText = JSON.stringify(config);
-  const screenshot = BROWSER_CDP_ENDPOINT ? "" : '<div style="margin-top:14px"><img id="screen" class="screen" alt="Prévia da tela do ChatGPT"></div>';
+  const screenshot = BROWSER_CDP_ENDPOINT ? "" : '<div style="margin-top:14px"><img id="screen" class="screen" alt="Prévia da tela do Gemini"></div>';
   const browserControls = MANAGED_AUTH_BROWSER
     ? `<div class="muted hint" style="margin-top:12px">A API e o login usam o mesmo Chromium dentro do Docker. Abra a tela remota para autenticar; o perfil fica persistido no volume local do container: <a href="${VNC_URL}" target="_blank" rel="noopener">abrir Chromium</a>.</div><div class="controls"><button id="openAuth">Abrir Chromium</button><button id="completeLogin">Confirmar login</button><button id="newchat">Nova conversa</button></div>`
     : BROWSER_CDP_ENDPOINT
       ? '<div class="muted hint" style="margin-top:12px">A API usa o navegador do endpoint CDP configurado.</div><div class="controls"><button id="newchat">Nova conversa</button></div>'
-      : '<div class="controls"><input id="typed" type="password" autocomplete="off" placeholder="E-mail, senha ou código do ChatGPT (oculto)"><button id="type">Digitar na página</button><button id="clear">Limpar campo selecionado</button><button data-key="Enter">Enter</button><button data-key="Tab">Tab</button><button data-key="Escape">Esc</button><button id="completeLogin">Concluir login</button><button id="newchat">Nova conversa</button></div><div class="muted hint">Clique no campo de login dentro da prévia, digite aqui e clique em “Digitar na página”. Depois clique em “Continue”. Senha e código ficam ocultos.</div>';
-  const configSection = '<section class="card"><h2 style="font-size:18px;margin:0 0 8px">Conectar no OpenCode</h2><div class="muted hint">A chave abaixo dá acesso à API apenas neste computador. O serviço usa o navegador e a sessão autenticada do ChatGPT.</div><pre class="code" id="config"></pre><div class="row"><button id="copy">Copiar configuração</button><span class="muted hint">Base URL: http://127.0.0.1:' + API_PORT + '/v1 · modelo: muse-web</span></div></section>';
+      : '<div class="controls"><input id="typed" type="password" autocomplete="off" placeholder="E-mail, senha ou código do Gemini (oculto)"><button id="type">Digitar na página</button><button id="clear">Limpar campo selecionado</button><button data-key="Enter">Enter</button><button data-key="Tab">Tab</button><button data-key="Escape">Esc</button><button id="completeLogin">Concluir login</button><button id="newchat">Nova conversa</button></div><div class="muted hint">Clique no campo de login dentro da prévia, digite aqui e clique em “Digitar na página”. Depois clique em “Continue”. Senha e código ficam ocultos.</div>';
+  const configSection = '<section class="card"><h2 style="font-size:18px;margin:0 0 8px">Conectar no OpenCode</h2><div class="muted hint">A chave abaixo dá acesso à API apenas neste computador. O serviço usa o navegador e a sessão autenticada do Gemini.</div><pre class="code" id="config"></pre><div class="row"><button id="copy">Copiar configuração</button><span class="muted hint">Base URL: http://127.0.0.1:' + API_PORT + '/v1 · modelo: gemini-web</span></div></section>';
   return `<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChatGPT → OpenCode</title>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini → OpenCode</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#111318;color:#eceef3;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:1120px;margin:28px auto;padding:0 18px}h1{font-size:24px;margin:0 0 4px}.muted{color:#a2a8b4}.card{background:#1a1d24;border:1px solid #30343e;border-radius:12px;padding:16px;margin:16px 0}.status{display:flex;gap:10px;align-items:center}.dot{width:10px;height:10px;border-radius:50%;background:#dca43c}.dot.ok{background:#4cc28a}.screen{display:block;width:100%;max-height:70vh;object-fit:contain;background:#08090b;border-radius:8px;cursor:crosshair}.controls{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}input,button,textarea{font:inherit;color:inherit;border:1px solid #414653;background:#252a33;border-radius:8px;padding:9px 11px}input[type=password]{flex:1;min-width:260px}button{cursor:pointer}button:hover{background:#313845}.key{font-family:ui-monospace,monospace}.code{white-space:pre-wrap;overflow-wrap:anywhere;background:#101217;padding:12px;border-radius:8px;font:12px/1.5 ui-monospace,monospace;max-height:300px;overflow:auto}.error{color:#ff9a91}.hint{font-size:13px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 </style></head><body><div class="wrap">
-<h1>ChatGPT → OpenCode</h1><div class="muted">${MANAGED_AUTH_BROWSER ? "O login e a API usam a mesma sessão do Chromium dentro do Docker." : BROWSER_CDP_ENDPOINT ? "O OpenCode usa o navegador do endpoint CDP configurado." : "A página do ChatGPT aparece como prévia; o controle remoto é encaminhado ao navegador Obscura."}</div>
+<h1>Gemini → OpenCode</h1><div class="muted">${MANAGED_AUTH_BROWSER ? "O login e a API usam a mesma sessão do Chromium dentro do Docker." : BROWSER_CDP_ENDPOINT ? "O OpenCode usa o navegador do endpoint CDP configurado." : "A página do Gemini aparece como prévia; o controle remoto é encaminhado ao navegador Obscura."}</div>
 <section class="card"><div class="status"><span id="dot" class="dot"></span><strong id="status">Conectando ao navegador…</strong><span id="url" class="muted"></span></div><div id="error" class="error"></div>${screenshot}
 ${browserControls}<p id="queueStatus" class="hint muted" role="status"></p><div class="controls"><button id="clearPending">Limpar pendentes</button><button id="resendPending">Reenviar pendentes</button></div><p id="pendingStatus" class="hint muted" role="status"></p></section>
 ${configSection}
-<section class="card"><strong>Atualizações e limites</strong><p id="updateStatus" class="muted" role="status">Consulte novas versões quando desejar.</p><button id="checkUpdate">Verificar atualização</button><p class="hint">Limite local por envio ao ChatGPT: ${MAX_PROMPT_CHARS} caracteres, incluindo instruções e ferramentas. Divida demandas grandes em etapas.</p><p class="hint">Para atualizar, na pasta instalada execute <code>python3 instalar-opencode.py --update</code> no WSL ou <code>.\\instalar.ps1 -Atualizar</code> no PowerShell. O volume com seu login e suas conversas é preservado.</p></section>
+<section class="card"><strong>Atualizações e limites</strong><p id="updateStatus" class="muted" role="status">Consulte novas versões quando desejar.</p><button id="checkUpdate">Verificar atualização</button><p class="hint">Limite local por envio ao Gemini: ${MAX_PROMPT_CHARS} caracteres, incluindo instruções e ferramentas. Divida demandas grandes em etapas.</p><p class="hint">Para atualizar, na pasta instalada execute <code>python3 instalar-opencode.py --update</code> no WSL ou <code>.\\instalar.ps1 -Atualizar</code> no PowerShell. O volume com seu login e suas conversas é preservado.</p></section>
 </div><script>
 const token=${JSON.stringify(controlToken)};const config=${configText};const externalCdp=${Boolean(BROWSER_CDP_ENDPOINT)};document.querySelector('#config').textContent=config;
 async function control(path,body){const r=await fetch('/control/'+path,{method:body?'POST':'GET',headers:{'X-Control-Token':token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error((await r.json()).error||'Falha no painel');return r;}
@@ -1218,7 +1208,7 @@ if(document.querySelector('#type'))document.querySelector('#type').onclick=async
 document.querySelector('#clear')?.addEventListener('click',()=>control('action',{action:'clear'}));
 document.querySelector('#newchat')?.addEventListener('click',async()=>{const r=await control('action',{action:'newchat'});document.querySelector('#status').textContent=(await r.json()).message;});
 document.querySelector('#openAuth')?.addEventListener('click',async()=>{try{await control('open-auth',{});document.querySelector('#status').textContent='Chromium do container ativo; conclua o login nessa janela.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
-document.querySelector('#completeLogin')?.addEventListener('click',async()=>{try{await control('complete-login',{});document.querySelector('#status').textContent='ChatGPT autenticado no Chromium.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
+document.querySelector('#completeLogin')?.addEventListener('click',async()=>{try{await control('complete-login',{});document.querySelector('#status').textContent='Gemini autenticado no Chromium.';await refresh();}catch(e){document.querySelector('#error').textContent=e.message;}});
 for(const [id,action,msg] of [['#clearPending','clear','Pendentes limpos: '],['#resendPending','resend','Pendentes reenviados: ']])document.querySelector(id).addEventListener('click',async()=>{try{const r=await(await control('pending',{action})).json();document.querySelector('#pendingStatus').textContent=msg+(action==='resend'?r.resent:r.released)+' sessão(ões).';}catch(e){document.querySelector('#error').textContent=e.message;}});
 document.querySelector('#copy')?.addEventListener('click',async()=>{await navigator.clipboard.writeText(config);document.querySelector('#copy').textContent='Copiado';});
 refresh();setInterval(refresh,1600);
@@ -1233,10 +1223,10 @@ async function handleControl(req, res, url) {
   if (url.pathname === "/control/status" && req.method === "GET") {
     if (musePage && !musePage.isClosed() && browser?.isConnected()) {
       const authenticated = await isMuseAuthenticated();
-      if (authenticated && !museAuthenticated) browserState = MANAGED_AUTH_BROWSER ? "ChatGPT autenticado no Chromium do Docker" : "ChatGPT autenticado no Obscura";
+      if (authenticated && !museAuthenticated) browserState = MANAGED_AUTH_BROWSER ? "Gemini autenticado no Chromium do Docker" : "Gemini autenticado no Obscura";
       if (!authenticated) browserState = (await museReadinessError()).status === 401
-        ? "ChatGPT exibiu uma tela de autenticação; conclua o login"
-        : "Página do ChatGPT carregando ou temporariamente indisponível; perda de login não confirmada";
+        ? "Gemini exibiu uma tela de autenticação; conclua o login"
+        : "Página do Gemini carregando ou temporariamente indisponível; perda de login não confirmada";
       museAuthenticated = authenticated;
     }
     return sendJson(res, 200, {
@@ -1270,7 +1260,7 @@ async function handleControl(req, res, url) {
       fetch(`http://127.0.0.1:${API_PORT}/v1/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}`, "x-opencode-session-id": sessionId },
-        body: JSON.stringify({ model: "chatgpt-web", stream: false, ...body }),
+        body: JSON.stringify({ model: "gemini-web", stream: false, ...body }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS + 30000),
       }).catch((error) => console.warn(JSON.stringify({ event: "muse_submission", phase: "manual_resend_failed", error: error.message })));
     }
@@ -1290,13 +1280,13 @@ async function handleControl(req, res, url) {
     try { await readBody(req, 1000); }
     catch { return sendJson(res, 400, { error: "Requisição inválida." }); }
     if (!musePage || musePage.isClosed()) return sendJson(res, 503, { error: "O navegador ainda está iniciando." });
-    if (!await isMuseAuthenticated()) return sendJson(res, 409, { error: "Ainda não detectei a caixa Message do ChatGPT. Termine o login no Chromium e tente de novo." });
+    if (!await isMuseAuthenticated()) return sendJson(res, 409, { error: "Ainda não detectei a caixa Message do Gemini. Termine o login no Chromium e tente de novo." });
     museAuthenticated = true;
-    browserState = MANAGED_AUTH_BROWSER ? "ChatGPT autenticado no Chromium do Docker" : "ChatGPT autenticado no Obscura";
+    browserState = MANAGED_AUTH_BROWSER ? "Gemini autenticado no Chromium do Docker" : "Gemini autenticado no Obscura";
     browserError = "";
     if (!MANAGED_AUTH_BROWSER) {
       try { await saveSessionState(await context.storageState({ indexedDB: true })); }
-      catch (error) { console.warn(`Não consegui guardar a sessão do ChatGPT: ${error.message}`); }
+      catch (error) { console.warn(`Não consegui guardar a sessão do Gemini: ${error.message}`); }
     }
     return sendJson(res, 200, { authenticated: true });
   }
@@ -1336,7 +1326,7 @@ async function handleControl(req, res, url) {
         await musePage.mouse.wheel(x, y);
       } else if (action.action === "newchat") {
         const opened = await startNewChat();
-        return sendJson(res, 200, { message: opened ? "Nova conversa aberta." : "Não localizei o botão de nova conversa; use o próprio ChatGPT na imagem." });
+        return sendJson(res, 200, { message: opened ? "Nova conversa aberta." : "Não localizei o botão de nova conversa; use o próprio Gemini na imagem." });
       } else {
         return sendJson(res, 400, { error: "Ação desconhecida." });
       }
@@ -1356,7 +1346,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith("/control/")) return handleControl(req, res, url);
   if (req.method === "GET" && url.pathname === "/v1/models") {
     if (!apiAuthorized(req)) return sendJson(res, 401, { error: { message: "API key inválida.", type: "authentication_error" } });
-    return sendJson(res, 200, { object: "list", data: [{ id: "chatgpt-web", object: "model", created: 0, owned_by: "chatgpt-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: REQUEST_TIMEOUT_MS / 1000, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
+    return sendJson(res, 200, { object: "list", data: [{ id: "gemini-web", object: "model", created: 0, owned_by: "gemini-local", limits: { max_prompt_chars: MAX_PROMPT_CHARS, max_request_bytes: MAX_REQUEST_BYTES, max_messages: 500, timeout_seconds: REQUEST_TIMEOUT_MS / 1000, queue_wait_timeout_seconds: 180, max_queue_waiting: 8 } }] });
   }
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") return handleCompletion(req, res);
   sendJson(res, 404, { error: { message: "Rota não encontrada.", type: "not_found_error" } });
@@ -1389,6 +1379,6 @@ server.listen(API_PORT, API_HOST, () => {
 openMuseBrowser().catch((error) => {
   browserError = error.message;
   browserState = BROWSER_CDP_ENDPOINT ? "Aguardando navegador CDP para conectar" : MANAGED_AUTH_BROWSER ? "Falha ao abrir Chromium" : "Falha ao abrir Obscura";
-  console.error(`Falha ao iniciar navegador/ChatGPT: ${error.message}`);
+  console.error(`Falha ao iniciar navegador/Gemini: ${error.message}`);
   scheduleReconnect();
 });

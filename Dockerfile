@@ -4,7 +4,7 @@ ENV DISPLAY=:99 \
   MUSE_BRIDGE_DATA=/data \
   MUSE_AUTH_BROWSER=1 \
   MUSE_CHROMIUM_BIN=/usr/lib/chromium/chromium \
-  MUSE_VNC_URL=http://127.0.0.1:4318/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4318&path=websockify
+  MUSE_VNC_URL=http://127.0.0.1:4348/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4348&path=websockify
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \

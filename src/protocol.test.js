@@ -218,7 +218,7 @@ test("live API preserves session threads across retries, switching and container
   skip: process.env.MUSE_BRIDGE_LIVE_TEST !== "1",
   timeout: 120000,
 }, async () => {
-  const base = "http://127.0.0.1:4317";
+  const base = "http://127.0.0.1:4347";
   const config = JSON.parse(await readFile(new URL("../opencode.json", import.meta.url), "utf8"));
   const html = await (await fetch(base)).text();
   const match = /const token=("[^"]+");const config=/.exec(html);
@@ -232,7 +232,7 @@ test("live API preserves session threads across retries, switching and container
   assert.ok(idle.authenticated && !idle.request, "Execute sem outra chamada ativa e com o Muse autenticado.");
   const marker = "BRIDGE_RETRY_OK_" + Date.now().toString(36);
   const body = {
-    model: "chatgpt-web", stream: true,
+    model: "gemini-web", stream: true,
     messages: [
       { role: "system", content: "Para esta verificação, a resposta final deve ser exatamente " + marker + ". Não execute ferramentas." },
       { role: "user", content: "Responda com o código definido nas instruções do cliente." },
@@ -280,22 +280,22 @@ test("live API preserves session threads across retries, switching and container
     'console.log(JSON.stringify({users:await page.locator("[data-message-id][data-message-role=user]").count()}));',
     'process.exit(0);',
   ].join("\n");
-  const result = await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e", script], {
+  const result = await promisify(execFile)("docker", ["compose", "exec", "-T", "gemini-bridge", "node", "--input-type=module", "-e", script], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
   });
   assert.equal(JSON.parse(result.stdout.trim()).users, 1, "O cancelamento e as repetições devem manter um único envio.");
-  const thread = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e",
+  const thread = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "gemini-bridge", "node", "--input-type=module", "-e",
     'import {readFile} from "node:fs/promises";const states=JSON.parse(await readFile("/data/conversations.json","utf8"));console.log(JSON.stringify(Object.fromEntries(Object.entries(states).map(([id,s])=>[id,s.url]))));'
   ], { cwd: fileURLToPath(new URL("..", import.meta.url)) })).stdout);
   assert.match(thread[marker], /\/thread\/(?!new$)/);
   const second = await fetch(base + "/v1/chat/completions", {
     method: "POST", headers: { Authorization: "Bearer " + config.provider.muse.options.apiKey, "Content-Type": "application/json", "X-Muse-Session-Id": marker + "_B" },
-    body: JSON.stringify({ model: "chatgpt-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
+    body: JSON.stringify({ model: "gemini-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
   });
   assert.equal(second.status, 200);
   const secondAnswer = await second.json();
   assert.match(secondAnswer.choices[0].message.content, /SEGUNDA_OK/);
-  await promisify(execFile)("docker", ["compose", "restart", "muse-bridge"], { cwd: fileURLToPath(new URL("..", import.meta.url)) });
+  await promisify(execFile)("docker", ["compose", "restart", "gemini-bridge"], { cwd: fileURLToPath(new URL("..", import.meta.url)) });
   await until(async () => {
     try {
       const html = await (await fetch(base + "/")).text();
@@ -308,7 +308,7 @@ test("live API preserves session threads across retries, switching and container
   const back = await post(false, AbortSignal.timeout(60000));
   assert.equal(back.status, 200);
   assert.equal((await back.json()).choices[0].message.content.trim(), marker);
-  const mapping = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "muse-bridge", "node", "--input-type=module", "-e",
+  const mapping = JSON.parse((await promisify(execFile)("docker", ["compose", "exec", "-T", "gemini-bridge", "node", "--input-type=module", "-e",
     'import {readFile} from "node:fs/promises";const states=JSON.parse(await readFile("/data/conversations.json","utf8"));console.log(JSON.stringify(Object.fromEntries(Object.entries(states).map(([id,s])=>[id,s.url]))));'
   ], { cwd: fileURLToPath(new URL("..", import.meta.url)) })).stdout);
   assert.equal(mapping[marker], thread[marker], "Voltar à sessão A precisa reutilizar a mesma conversa do Muse.");

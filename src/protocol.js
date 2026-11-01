@@ -257,7 +257,7 @@ export function composerText(prompt) {
   return "(Neste texto, ⏎ representa uma quebra de linha.) " + prompt.replace(/\n{2,}/g, " ⏎⏎ ").replace(/\n/g, " ⏎ ");
 }
 
-// Roda dentro da página do ChatGPT (enviada como texto): não pode usar nada fora do corpo da função.
+// Roda dentro da página do Gemini (enviada como texto): não pode usar nada fora do corpo da função.
 // O OpenCode exige o resumo de compactação com "## Seção" e "- item"; innerText perde esses marcadores.
 export function toMarkdown(root) {
   const walk = (el) => {
