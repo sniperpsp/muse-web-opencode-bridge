@@ -28,7 +28,7 @@ test("HTTP payload limit returns actionable JSON instead of resetting the connec
   try {
     const base = `http://127.0.0.1:${port}`;
     let ready = false;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 200; i++) {
       try { ready = (await fetch(base)).ok; } catch {}
       if (ready) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -218,7 +218,7 @@ test("live API preserves session threads across retries, switching and container
   skip: process.env.MUSE_BRIDGE_LIVE_TEST !== "1",
   timeout: 120000,
 }, async () => {
-  const base = "http://127.0.0.1:4317";
+  const base = "http://127.0.0.1:4337";
   const config = JSON.parse(await readFile(new URL("../opencode.json", import.meta.url), "utf8"));
   const html = await (await fetch(base)).text();
   const match = /const token=("[^"]+");const config=/.exec(html);
@@ -232,7 +232,7 @@ test("live API preserves session threads across retries, switching and container
   assert.ok(idle.authenticated && !idle.request, "Execute sem outra chamada ativa e com o Muse autenticado.");
   const marker = "BRIDGE_RETRY_OK_" + Date.now().toString(36);
   const body = {
-    model: "chatgpt-web", stream: true,
+    model: "deepseek-web", stream: true,
     messages: [
       { role: "system", content: "Para esta verificação, a resposta final deve ser exatamente " + marker + ". Não execute ferramentas." },
       { role: "user", content: "Responda com o código definido nas instruções do cliente." },
@@ -290,7 +290,7 @@ test("live API preserves session threads across retries, switching and container
   assert.match(thread[marker], /\/thread\/(?!new$)/);
   const second = await fetch(base + "/v1/chat/completions", {
     method: "POST", headers: { Authorization: "Bearer " + config.provider.muse.options.apiKey, "Content-Type": "application/json", "X-Muse-Session-Id": marker + "_B" },
-    body: JSON.stringify({ model: "chatgpt-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
+    body: JSON.stringify({ model: "deepseek-web", messages: [{ role: "user", content: "Responda somente SEGUNDA_OK." }] }), signal: AbortSignal.timeout(60000),
   });
   assert.equal(second.status, 200);
   const secondAnswer = await second.json();
@@ -368,7 +368,7 @@ test("capMessages encurta a última mensagem do usuário só quando nada mais re
 
 // ---- Guardrails: problemas que já tivemos em produção e não podem voltar ----
 
-test("guardrail: prompt de muitas linhas vai numa linha só (editor do ChatGPT trava por parágrafo)", () => {
+test("guardrail: prompt de muitas linhas vai numa linha só (editor do DeepSeek trava por parágrafo)", () => {
   const curto = "a\nb\nc";
   assert.equal(composerText(curto), curto);
   const longo = Array.from({ length: 1666 }, (_, i) => `linha ${i}`).join("\n");

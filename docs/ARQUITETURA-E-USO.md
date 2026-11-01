@@ -13,7 +13,7 @@ O navegador roda dentro do Docker. Não é necessário iniciar nem deixar aberto
 ```mermaid
 sequenceDiagram
     participant O as OpenCode
-    participant A as API local :4317
+    participant A as API local :4337
     participant C as Chromium no Docker
     participant M as muse.ai
     O->>A: POST /v1/chat/completions
@@ -47,7 +47,7 @@ O pedido auxiliar do OpenCode para gerar um título é atendido localmente, usan
 | noVNC | Mostra e controla o Chromium pelo navegador do computador. |
 | Volume Docker `muse-opencode-bridge-data` | Guarda o perfil do Chromium e a chave local da API. |
 
-As portas publicadas são `127.0.0.1:4317` (painel e API) e `127.0.0.1:4318` (tela noVNC). O Compose limita as duas ao computador local.
+As portas publicadas são `127.0.0.1:4337` (painel e API) e `127.0.0.1:4338` (tela noVNC). O Compose limita as duas ao computador local.
 
 ## Iniciar e autenticar
 
@@ -58,13 +58,13 @@ docker volume create muse-opencode-bridge-data
 docker compose up --build -d
 ```
 
-Abra `http://127.0.0.1:4317`. O painel mostra a aba que a API usará. Para autenticar, clique em **Abrir Chromium** ou acesse `http://127.0.0.1:4318/vnc.html?autoconnect=1&resize=scale&path=websockify`. Faça login no Muse e clique em **Confirmar login**. O estado esperado é **Muse autenticado no Chromium do Docker**.
+Abra `http://127.0.0.1:4337`. O painel mostra a aba que a API usará. Para autenticar, clique em **Abrir Chromium** ou acesse `http://127.0.0.1:4338/vnc.html?autoconnect=1&resize=scale&path=websockify`. Faça login no Muse e clique em **Confirmar login**. O estado esperado é **Muse autenticado no Chromium do Docker**.
 
 Depois do login, pode fechar a aba do noVNC. O Chromium continua dentro do container; mantenha o Docker em execução para usar a API. Cookies e outros dados de autenticação ficam no perfil persistente do Chromium no volume. Ao reiniciar o serviço, ele abre esse mesmo perfil até o Muse expirar ou revogar a sessão.
 
 ## Conectar o OpenCode
 
-No painel, copie a configuração exibida para o `opencode.json` global ou do projeto. Ela registra o provedor `muse`, a base URL `http://127.0.0.1:4317/v1` e o modelo `muse-web`. Em seguida, selecione `muse/muse-web` no OpenCode.
+No painel, copie a configuração exibida para o `opencode.json` global ou do projeto. Ela registra o provedor `muse`, a base URL `http://127.0.0.1:4337/v1` e o modelo `muse-web`. Em seguida, selecione `muse/muse-web` no OpenCode.
 
 A chave local é criada na primeira inicialização e guardada no volume, em `/data/api-key`. O painel a inclui na configuração para copiar. Ela dá acesso à ponte local; não é a senha do Muse.
 
@@ -80,7 +80,7 @@ As rotas `/v1` exigem `Authorization: Bearer <chave local>`. O painel usa um tok
 Exemplo de chamada direta:
 
 ```bash
-curl http://127.0.0.1:4317/v1/chat/completions \
+curl http://127.0.0.1:4337/v1/chat/completions \
   -H 'Authorization: Bearer SUA_CHAVE_LOCAL' \
   -H 'Content-Type: application/json' \
   -H 'X-Muse-Session-Id: minha-conversa' \
@@ -121,8 +121,8 @@ docker compose up --build -d
 
 | Sintoma | Verificação |
 | --- | --- |
-| Painel não abre | Confirme `docker compose ps` e abra `http://127.0.0.1:4317`. |
-| noVNC não conecta | Abra `http://127.0.0.1:4318/vnc.html?autoconnect=1&resize=scale&path=websockify` e confira os logs do container. |
+| Painel não abre | Confirme `docker compose ps` e abra `http://127.0.0.1:4337`. |
+| noVNC não conecta | Abra `http://127.0.0.1:4338/vnc.html?autoconnect=1&resize=scale&path=websockify` e confira os logs do container. |
 | Painel pede login | Abra o Chromium no noVNC, conclua a autenticação e espere **Muse autenticado no Chromium do Docker**. |
 | OpenCode retorna 401 | Confira se a chave copiada do painel está no provedor `muse` e se o painel detecta a sessão autenticada. |
 | Muse mostra “Something went wrong” | Confira a mesma aba do Chromium mostrada no painel. Se o erro estiver nela, recarregue a página no Chromium e confirme a sessão antes de repetir a chamada. |
