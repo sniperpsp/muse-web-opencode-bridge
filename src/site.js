@@ -51,3 +51,6 @@ export const SEND_BUTTON_NAME_RE = /enviar|send|mandar|submit/i;
 
 // Botão de enviar do DeepSeek: div role=button circular primário (sem nome acessível). Vazio = detecção genérica.
 export const SEND_SELECTOR = 'div.ds-button--primary.ds-button--circle[role="button"]';
+
+// Mídia da resposta (imagem/áudio/vídeo/download): só dentro das respostas; 'main' inteiro pegava imagens da página e encerrava a espera com texto vazio.
+export const MEDIA_SELECTOR = '.ds-markdown img, .ds-markdown audio, .ds-markdown video, .ds-markdown a[download]';

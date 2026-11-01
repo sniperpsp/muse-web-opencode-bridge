@@ -13,7 +13,7 @@ import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
 import {
   ASSISTANT_TEXT_SELECTOR, COMPOSER_SELECTOR, CONVERSATION_PATH_RE, GENERIC_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME_RE,
-  LOGIN_BUTTON_TEXT_RE, LOGIN_FIELDS_SELECTOR, SEND_SELECTOR, stampMessages, LOGIN_SCREEN_TEXT_RE, MESSAGE_ID_ATTR, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME_RE,
+  LOGIN_BUTTON_TEXT_RE, LOGIN_FIELDS_SELECTOR, SEND_SELECTOR, stampMessages, MEDIA_SELECTOR, LOGIN_SCREEN_TEXT_RE, MESSAGE_ID_ATTR, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME_RE,
   STREAMING_SELECTOR, isAssistantMessageId, messageRole,
 } from "./site.js";
 
@@ -792,7 +792,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
 async function readMediaSources(signal) {
   if (!musePage) return [];
   try {
-    return await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do DeepSeek");
+    return await museBrowserOperation(() => musePage.locator(MEDIA_SELECTOR).evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do DeepSeek");
   } catch (error) {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return [];
@@ -803,7 +803,7 @@ async function collectNewMedia(beforeSources, signal) {
   const attachments = [];
   if (!musePage) return attachments;
   try {
-    const nodes = await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((elements) => elements.map((node) => ({
+    const nodes = await museBrowserOperation(() => musePage.locator(MEDIA_SELECTOR).evaluateAll((elements) => elements.map((node) => ({
       url: node.currentSrc || node.src || node.href || "",
       name: node.getAttribute("download") || node.getAttribute("alt") || node.getAttribute("aria-label") || "",
       mimeType: node.tagName === "IMG" ? "image/*" : node.tagName === "AUDIO" ? "audio/*" : node.tagName === "VIDEO" ? "video/*" : "application/octet-stream",
