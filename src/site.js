@@ -5,12 +5,21 @@
 // que é o que hoje funciona. Ainda não há seletores do DeepSeek.
 // Os seletores MUSE_*_SELECTOR por variável de ambiente continuam tendo prioridade (ver server.js).
 
-// Unidade de mensagem: o DeepSeek não põe id nas mensagens; stampMessages grava data-bridge-id="m<n>:user|assistant"
-// (a conversa alterna usuário/assistente, começando pelo usuário) para o resto da ponte usar o mesmo esquema do ChatGPT.
+// Unidade de mensagem: o DeepSeek não põe id nas mensagens e a lista é virtualizada (mensagens antigas saem do DOM),
+// então índice/paridade não servem. stampMessages grava data-bridge-id="<hash do texto>.<n>:user|assistant"; o papel vem
+// de .ds-markdown (só as respostas do assistente têm). Um hash estável mantém o id da mensagem mesmo se o início da lista sumir.
 export const MESSAGE_UNIT_SELECTOR = ".ds-message";
 export const MESSAGE_ID_ATTR = "data-bridge-id";
 export function stampMessages([unitSelector, idAttr]) {
-  document.querySelectorAll(unitSelector).forEach((el, i) => el.setAttribute(idAttr, `m${i}:${i % 2 === 0 ? "user" : "assistant"}`));
+  const seen = {};
+  document.querySelectorAll(unitSelector).forEach((el) => {
+    const text = el.innerText || "";
+    const key = `${text.slice(0, 200)}|${text.length}|${text.slice(-200)}`;
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+    seen[hash] = (seen[hash] || 0) + 1;
+    el.setAttribute(idAttr, `${(hash >>> 0).toString(36)}.${seen[hash]}:${el.querySelector(".ds-markdown") ? "assistant" : "user"}`);
+  });
 }
 
 // Papel decidido pelo id. Funções sem closure: são serializadas e reavaliadas dentro da página (ver readChatMessages).
