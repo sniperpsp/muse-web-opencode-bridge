@@ -11,7 +11,7 @@ import { capMessages, checkPromptLength, composerText, fitHistory, isDeliveryErr
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
-import { ASSISTANT_TEXT_SELECTOR, CONVERSATION_PATH, GENERIC_COMPOSER_SELECTOR, LABELED_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME, LOGIN_BUTTON_TEXT, LOGIN_FIELD_SELECTOR, LOGIN_SCREEN_TEXT, MESSAGE_ID_ATTRIBUTE, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME, STREAMING_SELECTOR, messageRole } from "./site.js";
+import { ASSISTANT_TEXT_SELECTOR, CONVERSATION_PATH, GENERIC_COMPOSER_SELECTOR, LABELED_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME, LOGIN_BUTTON_TEXT, LOGIN_FIELD_SELECTOR, LOGIN_SCREEN_TEXT, MESSAGE_ID_ATTRIBUTE, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME, STREAMING_SELECTOR, messageRole, stampMessages, MEDIA_SELECTOR } from "./site.js";
 
 const API_HOST = process.env.MUSE_BRIDGE_HOST || "127.0.0.1";
 const API_PORT = Number(process.env.MUSE_BRIDGE_PORT || 4317);
@@ -577,6 +577,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await museBrowserOperation(() => composer.evaluate((element) => element.maxLength), signal, "Verificar o limite do campo");
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files, signal);
+    await museBrowserOperation(() => musePage.evaluate(stampMessages, [MESSAGE_UNIT_SELECTOR, MESSAGE_ID_ATTRIBUTE]), signal, "Numerar as mensagens");
     const beforeMessageIds = await museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, attribute) => groups.map((group) => group.getAttribute(attribute)), MESSAGE_ID_ATTRIBUTE), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
     if (prompt) await museBrowserOperation(() => composer.fill(composerText(prompt)), signal, "Escrever a mensagem no Gemini");
@@ -680,6 +681,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
 let wantMarkdown = false;
 async function readChatMessages(beforeMessageIds, signal) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || ASSISTANT_TEXT_SELECTOR;
+  await museBrowserOperation(() => musePage.evaluate(stampMessages, [MESSAGE_UNIT_SELECTOR, MESSAGE_ID_ATTRIBUTE]), signal, "Numerar as mensagens");
   return museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown, toMarkdownSource, messageRoleSource, idAttribute }) => {
     const toMarkdown = (0, eval)(`(${toMarkdownSource})`);
     const messageRole = (0, eval)(`(${messageRoleSource})`);
@@ -777,7 +779,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
 async function readMediaSources(signal) {
   if (!musePage) return [];
   try {
-    return await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do Gemini");
+    return await museBrowserOperation(() => musePage.locator(MEDIA_SELECTOR).evaluateAll((nodes) => nodes.map((node) => node.currentSrc || node.src || node.href || "")), signal, "Ler os anexos do Gemini");
   } catch (error) {
     if (signal?.aborted || isBrowserRecoveryError(error)) throw error;
     return [];
@@ -788,7 +790,7 @@ async function collectNewMedia(beforeSources, signal) {
   const attachments = [];
   if (!musePage) return attachments;
   try {
-    const nodes = await museBrowserOperation(() => musePage.locator('main img:not([alt="User attachment"]), main audio, main video, main a[download]').evaluateAll((elements) => elements.map((node) => ({
+    const nodes = await museBrowserOperation(() => musePage.locator(MEDIA_SELECTOR).evaluateAll((elements) => elements.map((node) => ({
       url: node.currentSrc || node.src || node.href || "",
       name: node.getAttribute("download") || node.getAttribute("alt") || node.getAttribute("aria-label") || "",
       mimeType: node.tagName === "IMG" ? "image/*" : node.tagName === "AUDIO" ? "audio/*" : node.tagName === "VIDEO" ? "video/*" : "application/octet-stream",
