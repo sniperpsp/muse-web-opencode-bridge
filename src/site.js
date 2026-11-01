@@ -5,9 +5,13 @@
 // que é o que hoje funciona. Ainda não há seletores do DeepSeek.
 // Os seletores MUSE_*_SELECTOR por variável de ambiente continuam tendo prioridade (ver server.js).
 
-// Unidade de mensagem: cada mensagem é um elemento com este atributo; o id termina em ":user" ou ":assistant".
-export const MESSAGE_UNIT_SELECTOR = "[data-content-search-unit-key]";
-export const MESSAGE_ID_ATTR = "data-content-search-unit-key";
+// Unidade de mensagem: o DeepSeek não põe id nas mensagens; stampMessages grava data-bridge-id="m<n>:user|assistant"
+// (a conversa alterna usuário/assistente, começando pelo usuário) para o resto da ponte usar o mesmo esquema do ChatGPT.
+export const MESSAGE_UNIT_SELECTOR = ".ds-message";
+export const MESSAGE_ID_ATTR = "data-bridge-id";
+export function stampMessages([unitSelector, idAttr]) {
+  document.querySelectorAll(unitSelector).forEach((el, i) => el.setAttribute(idAttr, `m${i}:${i % 2 === 0 ? "user" : "assistant"}`));
+}
 
 // Papel decidido pelo id. Funções sem closure: são serializadas e reavaliadas dentro da página (ver readChatMessages).
 export function messageRole(id) {
@@ -18,13 +22,13 @@ export function isAssistantMessageId(id) {
 }
 
 // Texto da resposta do assistente dentro da unidade de mensagem.
-export const ASSISTANT_TEXT_SELECTOR = '[data-markdown-text-style="assistant-message"]';
+export const ASSISTANT_TEXT_SELECTOR = '.ds-markdown';
 
 // Botão de parar: enquanto existe e está visível, a resposta ainda está sendo escrita.
 export const STREAMING_SELECTOR = 'button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Parar" i], [data-testid="stop-button"]';
 
-// URL de conversa, ex.: /c/<id>
-export const CONVERSATION_PATH_RE = /^\/c\/[a-zA-Z0-9-]+$/;
+// URL de conversa, ex.: /a/chat/s/<uuid>
+export const CONVERSATION_PATH_RE = /^\/a\/chat\/s\/[a-zA-Z0-9-]+$/;
 
 // Deslogado: o botão de entrar / cadastrar aparece na página.
 export const LOGGED_OUT_BUTTON_NAME_RE = /^(log in|sign up for free|entrar|fazer login)$/i;
@@ -44,3 +48,6 @@ export const GENERIC_COMPOSER_SELECTOR = 'textarea, [contenteditable="true"], [r
 
 // Botão de enviar, quando não há MUSE_SEND_SELECTOR.
 export const SEND_BUTTON_NAME_RE = /enviar|send|mandar|submit/i;
+
+// Botão de enviar do DeepSeek: div role=button circular primário (sem nome acessível). Vazio = detecção genérica.
+export const SEND_SELECTOR = 'div.ds-button--primary.ds-button--circle[role="button"]';

@@ -13,7 +13,7 @@ import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
 import {
   ASSISTANT_TEXT_SELECTOR, COMPOSER_SELECTOR, CONVERSATION_PATH_RE, GENERIC_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME_RE,
-  LOGIN_BUTTON_TEXT_RE, LOGIN_FIELDS_SELECTOR, LOGIN_SCREEN_TEXT_RE, MESSAGE_ID_ATTR, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME_RE,
+  LOGIN_BUTTON_TEXT_RE, LOGIN_FIELDS_SELECTOR, SEND_SELECTOR, stampMessages, LOGIN_SCREEN_TEXT_RE, MESSAGE_ID_ATTR, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME_RE,
   STREAMING_SELECTOR, isAssistantMessageId, messageRole,
 } from "./site.js";
 
@@ -587,6 +587,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     const siteLimit = await museBrowserOperation(() => composer.evaluate((element) => element.maxLength), signal, "Verificar o limite do campo");
     checkPromptLength(prompt, siteLimit > 0 ? Math.min(siteLimit, MAX_PROMPT_CHARS) : MAX_PROMPT_CHARS);
     if (files.length) await uploadFiles(files, signal);
+    await museBrowserOperation(() => musePage.evaluate(stampMessages, [MESSAGE_UNIT_SELECTOR, MESSAGE_ID_ATTR]), signal, "Numerar as mensagens");
     const beforeMessageIds = await museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, idAttr) => groups.map((group) => group.getAttribute(idAttr)), MESSAGE_ID_ATTR), signal, "Identificar as mensagens anteriores");
     const beforeMedia = await readMediaSources(signal);
     if (prompt) await museBrowserOperation(() => composer.fill(composerText(prompt)), signal, "Escrever a mensagem no DeepSeek");
@@ -594,8 +595,9 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
     conversation.pendingSubmission = { requestHash, prompt, beforeMessageIds, beforeMedia, startedAt: Date.now(), phase: "sending", attempt };
     await saveConversations();
 
-    if (process.env.MUSE_SEND_SELECTOR) {
-      await museBrowserOperation(() => musePage.locator(process.env.MUSE_SEND_SELECTOR).last().click(), signal, "Enviar a mensagem ao DeepSeek");
+    const sendSelector = process.env.MUSE_SEND_SELECTOR || SEND_SELECTOR;
+    if (sendSelector) {
+      await museBrowserOperation(() => musePage.locator(sendSelector).last().click(), signal, "Enviar a mensagem ao DeepSeek");
     } else {
       const sent = await museBrowserOperation(async () => {
         const send = musePage.getByRole("button", { name: SEND_BUTTON_NAME_RE }).last();
@@ -691,6 +693,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
 let wantMarkdown = false;
 async function readChatMessages(beforeMessageIds, signal) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || ASSISTANT_TEXT_SELECTOR;
+  await museBrowserOperation(() => musePage.evaluate(stampMessages, [MESSAGE_UNIT_SELECTOR, MESSAGE_ID_ATTR]), signal, "Numerar as mensagens");
   return museBrowserOperation(() => musePage.locator(MESSAGE_UNIT_SELECTOR).evaluateAll((groups, { selector, idAttr, beforeMessageIds, streamingSelector, wantMarkdown, toMarkdownSource, roleSource, assistantIdSource }) => {
     const toMarkdown = (0, eval)(`(${toMarkdownSource})`);
     const roleOf = (0, eval)(`(${roleSource})`);
