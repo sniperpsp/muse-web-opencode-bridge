@@ -5,8 +5,8 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
-import { capMessages, checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
+import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, toMarkdown, transcriptDelta } from "./protocol.js";
+import { capMessages, checkPromptLength, composerText, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { updateStatus } from "./updates.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -364,4 +364,60 @@ test("capMessages encurta a última mensagem do usuário só quando nada mais re
   const capped = capMessages([{ role: "system", content: "regras" }, { role: "user", content: "h".repeat(90000) }], 20000);
   assert.ok(JSON.stringify(capped).length <= 20000);
   assert.match(capped[1].content, /caracteres omitidos/);
+});
+
+// ---- Guardrails: problemas que já tivemos em produção e não podem voltar ----
+
+test("guardrail: prompt de muitas linhas vai numa linha só (editor do ChatGPT trava por parágrafo)", () => {
+  const curto = "a\nb\nc";
+  assert.equal(composerText(curto), curto);
+  const longo = Array.from({ length: 1666 }, (_, i) => `linha ${i}`).join("\n");
+  const saida = composerText(longo);
+  assert.equal(saida.includes("\n"), false);
+  assert.match(saida, /^\(Neste texto, ⏎ representa uma quebra de linha\.\) /);
+  assert.equal(composerText("x\n\n\n" + "y\n".repeat(200)).includes("\n"), false);
+});
+
+const fake = (tag, children = [], text = "") => ({
+  nodeType: 1, tagName: tag.toUpperCase(), childNodes: children, children: children.filter((c) => c.nodeType === 1),
+  textContent: text || children.map((c) => c.textContent).join(""), innerText: text || children.map((c) => c.innerText ?? c.textContent).join(""),
+  querySelector(sel) { return this.childNodes.find((c) => c.nodeType === 1 && c.tagName.toLowerCase() === sel) || null; },
+});
+const txt = (value) => ({ nodeType: 3, textContent: value });
+
+test("guardrail: resposta sem ferramentas mantém ## títulos e - itens (template de compactação do OpenCode)", () => {
+  const root = fake("div", [
+    fake("h2", [txt("Objective")]),
+    fake("ul", [fake("li", [txt("melhorar o kit")])]),
+    fake("h2", [txt("Next Move")]),
+    fake("ol", [fake("li", [txt("ler arquivo")]), fake("li", [txt("editar")])]),
+    fake("h2", [txt("Relevant Files")]),
+    fake("ul", [fake("li", [fake("code", [], "src/a.luau"), txt(": principal")])]),
+  ]);
+  assert.equal(toMarkdown(root), "## Objective\n\n- melhorar o kit\n\n## Next Move\n\n1. ler arquivo\n2. editar\n\n## Relevant Files\n\n- `src/a.luau`: principal");
+});
+
+test("guardrail: conversão para markdown roda sozinha dentro da página (sem depender de nada do módulo)", () => {
+  const isolada = (0, eval)(`(${toMarkdown.toString()})`);
+  assert.equal(isolada(fake("div", [fake("h2", [txt("A")])])), "## A");
+});
+
+test("guardrail: padrões do compose e do código batem (limite 100k, timeout 420s)", async () => {
+  const dir = fileURLToPath(new URL("..", import.meta.url));
+  const compose = await readFile(`${dir}docker-compose.yml`, "utf8");
+  const code = await readFile(`${dir}src/server.js`, "utf8");
+  for (const [name, value] of [["MUSE_MAX_PROMPT_CHARS", "100000"], ["MUSE_REQUEST_TIMEOUT_MS", "420000"]]) {
+    assert.match(compose, new RegExp(`${name}: \\$\\{${name}:-${value}\\}`), `compose ${name}`);
+    assert.match(code, new RegExp(`${name} \\|\\| ${value}`), `código ${name}`);
+  }
+});
+
+test("guardrail: erro solto no navegador não derruba o processo", async () => {
+  const code = await readFile(fileURLToPath(new URL("./server.js", import.meta.url)), "utf8");
+  assert.match(code, /process\.on\("unhandledRejection"/);
+});
+
+test("guardrail: retomada de envio pendente não exige a caixa de mensagem (evita loop muse_page_not_ready)", async () => {
+  const code = await readFile(fileURLToPath(new URL("./server.js", import.meta.url)), "utf8");
+  assert.match(code, /pendingSubmission\?\.phase !== "waiting"/);
 });

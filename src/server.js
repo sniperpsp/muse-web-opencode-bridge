@@ -6,8 +6,8 @@ import { homedir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
-import { capMessages, checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
+import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, toMarkdown } from "./protocol.js";
+import { capMessages, checkPromptLength, composerText, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
@@ -40,6 +40,8 @@ const FULL_INSTRUCTIONS_EVERY = 6;
 const PENDING_MAX_MS = Number(process.env.MUSE_PENDING_MAX_MS || 600000);
 const STALL_MS = Number(process.env.MUSE_STALL_MS || 60000);
 checkPromptLength("", MAX_PROMPT_CHARS);
+// Falha em uma chamada ao navegador (ex.: Chromium reconectando) não pode derrubar a ponte inteira.
+process.on("unhandledRejection", (reason) => console.error(JSON.stringify({ event: "unhandled_rejection", detail: String(reason?.message || reason).slice(0, 300) })));
 const REQUEST_TIMEOUT_MS = Number(process.env.MUSE_REQUEST_TIMEOUT_MS || 420000);
 if (!Number.isSafeInteger(REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_MS < 1000 || REQUEST_TIMEOUT_MS > 600000) throw new Error("MUSE_REQUEST_TIMEOUT_MS deve estar entre 1000 e 600000 milissegundos.");
 const BROWSER_OPERATION_TIMEOUT_MS = Math.min(15000, REQUEST_TIMEOUT_MS);
@@ -576,14 +578,6 @@ async function uploadFiles(files, signal) {
   await museBrowserOperation(() => inputs.first().setInputFiles(files), signal, "Anexar arquivos ao ChatGPT");
 }
 
-// O editor do chatgpt.com (ProseMirror) cria um parágrafo por linha e fica lento (~40 ms/linha: 500 linhas = 19 s, travava o Chromium).
-// Texto sem quebras de linha entra em <1 s mesmo com 300k caracteres, então prompts longos vão numa linha só, com ⏎ no lugar das quebras.
-const MAX_COMPOSER_LINES = 120;
-function composerText(prompt) {
-  if (prompt.split("\n").length <= MAX_COMPOSER_LINES) return prompt;
-  return "(Neste texto, ⏎ representa uma quebra de linha.) " + prompt.replace(/\n{2,}/g, " ⏎⏎ ").replace(/\n/g, " ⏎ ");
-}
-
 async function submitText(prompt, files, requestHash, signal, attempt = 0) {
   signal.throwIfAborted();
   if (!conversation.pendingSubmission) {
@@ -697,28 +691,8 @@ const STREAMING_SELECTOR = 'button[data-testid="stop-button"], button[aria-label
 let wantMarkdown = false;
 async function readChatMessages(beforeMessageIds, signal) {
   const selector = process.env.MUSE_RESPONSE_SELECTOR || '[data-markdown-text-style="assistant-message"]';
-  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown }) => {
-    const toMarkdown = (root) => {
-      const walk = (el) => {
-        let out = "";
-        for (const n of el.childNodes) {
-          if (n.nodeType === 3) { out += n.textContent; continue; }
-          if (n.nodeType !== 1) continue;
-          const tag = n.tagName.toLowerCase();
-          if (/^h[1-6]$/.test(tag)) out += `\n\n${"#".repeat(Number(tag[1]))} ${walk(n).trim()}\n\n`;
-          else if (tag === "p") out += `\n\n${walk(n).trim()}\n\n`;
-          else if (tag === "ul" || tag === "ol") { let i = 0; out += "\n"; for (const li of n.children) if (li.tagName === "LI") out += `${tag === "ol" ? `${++i}. ` : "- "}${walk(li).trim().replace(/\n+/g, " ")}\n`; out += "\n"; }
-          else if (tag === "pre") out += `\n\n\`\`\`\n${(n.querySelector("code") || n).innerText.replace(/\n$/, "")}\n\`\`\`\n\n`;
-          else if (tag === "code") out += `\`${n.textContent}\``;
-          else if (tag === "strong" || tag === "b") out += `**${walk(n)}**`;
-          else if (tag === "em" || tag === "i") out += `*${walk(n)}*`;
-          else if (tag === "br") out += "\n";
-          else if (tag !== "button" && tag !== "svg") out += walk(n);
-        }
-        return out;
-      };
-      return walk(root).replace(/\n{3,}/g, "\n\n").trim();
-    };
+  return museBrowserOperation(() => musePage.locator('[data-content-search-unit-key]').evaluateAll((groups, { selector, beforeMessageIds, streamingSelector, wantMarkdown, toMarkdownSource }) => {
+    const toMarkdown = (0, eval)(`(${toMarkdownSource})`);
     const previous = new Set(beforeMessageIds);
     const streaming = [...document.querySelectorAll(streamingSelector)].some((el) => el.getBoundingClientRect().width);
     const all = groups.map((group) => ({ group, id: group.getAttribute("data-content-search-unit-key") }));
@@ -739,7 +713,7 @@ async function readChatMessages(beforeMessageIds, signal) {
       busy: role === "assistant" && (!assistant || (streaming && lastAssistant?.id === id)),
     };
     });
-  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR, wantMarkdown }), signal, "Ler as mensagens novas do ChatGPT");
+  }, { selector, beforeMessageIds, streamingSelector: STREAMING_SELECTOR, wantMarkdown, toMarkdownSource: toMarkdown.toString() }), signal, "Ler as mensagens novas do ChatGPT");
 }
 
 // Uma nova mensagem chegou com um envio antigo pendente: se o ChatGPT marcou aquele envio como não entregue, solta o pendente.

@@ -248,3 +248,35 @@ export function needsRotation(conversation, maxChars, maxTurns) {
   return Boolean(conversation.url) && (growth > maxChars || (conversation.turns || 0) >= maxTurns);
 }
 
+
+// O editor do chatgpt.com (ProseMirror) cria um parágrafo por linha e fica lento (~40 ms/linha: 500 linhas = 19 s, travava o Chromium).
+// Texto sem quebras de linha entra em <1 s mesmo com 300k caracteres, então prompts longos vão numa linha só, com ⏎ no lugar das quebras.
+export const MAX_COMPOSER_LINES = 120;
+export function composerText(prompt) {
+  if (prompt.split("\n").length <= MAX_COMPOSER_LINES) return prompt;
+  return "(Neste texto, ⏎ representa uma quebra de linha.) " + prompt.replace(/\n{2,}/g, " ⏎⏎ ").replace(/\n/g, " ⏎ ");
+}
+
+// Roda dentro da página do ChatGPT (enviada como texto): não pode usar nada fora do corpo da função.
+// O OpenCode exige o resumo de compactação com "## Seção" e "- item"; innerText perde esses marcadores.
+export function toMarkdown(root) {
+  const walk = (el) => {
+    let out = "";
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) { out += n.textContent; continue; }
+      if (n.nodeType !== 1) continue;
+      const tag = n.tagName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) out += `\n\n${"#".repeat(Number(tag[1]))} ${walk(n).trim()}\n\n`;
+      else if (tag === "p") out += `\n\n${walk(n).trim()}\n\n`;
+      else if (tag === "ul" || tag === "ol") { let i = 0; out += "\n"; for (const li of n.children) if (li.tagName === "LI") out += `${tag === "ol" ? `${++i}. ` : "- "}${walk(li).trim().replace(/\n+/g, " ")}\n`; out += "\n"; }
+      else if (tag === "pre") out += `\n\n\`\`\`\n${(n.querySelector("code") || n).innerText.replace(/\n$/, "")}\n\`\`\`\n\n`;
+      else if (tag === "code") out += `\`${n.textContent}\``;
+      else if (tag === "strong" || tag === "b") out += `**${walk(n)}**`;
+      else if (tag === "em" || tag === "i") out += `*${walk(n)}*`;
+      else if (tag === "br") out += "\n";
+      else if (tag !== "button" && tag !== "svg") out += walk(n);
+    }
+    return out;
+  };
+  return walk(root).replace(/\n{3,}/g, "\n\n").trim();
+}
