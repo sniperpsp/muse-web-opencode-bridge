@@ -213,6 +213,33 @@ export function fitHistory(messages, budget) {
   return { messages: [...head, ...rest.slice(start)], omitted: start };
 }
 
+// Encurta o miolo dos resultados de ferramenta (depois, das mensagens antigas) até as mensagens caberem no orçamento.
+// Nunca mexe nas instruções system/developer nem na última mensagem do usuário.
+export function capMessages(messages, budget) {
+  const out = messages.map((message) => ({ ...message }));
+  const total = () => out.reduce((sum, message) => sum + JSON.stringify(message).length, 0);
+  const pick = (eligible) => {
+    let index = -1;
+    let longest = 2000;
+    out.forEach((message, i) => {
+      if (typeof message.content === "string" && message.content.length > longest && eligible(message, i)) { longest = message.content.length; index = i; }
+    });
+    return index;
+  };
+  const lastUser = out.findLastIndex((message) => message.role === "user");
+  for (let guard = 0; guard < 500 && total() > budget; guard++) {
+    let index = pick((message) => message.role === "tool");
+    if (index < 0) index = pick((message, i) => message.role !== "system" && message.role !== "developer" && i !== lastUser);
+    if (index < 0) break;
+    const text = out[index].content;
+    const keep = Math.max(1000, text.length - (total() - budget) - 400);
+    const head = Math.ceil(keep / 2);
+    const tail = keep - head;
+    out[index].content = `${text.slice(0, head)}\n[... ${text.length - keep} caracteres omitidos para caber no limite ...]\n${text.slice(text.length - tail)}`;
+  }
+  return out;
+}
+
 // A conversa do Muse acumula texto na página; passando do limite, a ponte abre outra thread.
 // O primeiro envio (instruções do cliente) é grande por natureza e não conta: vale só o crescimento depois dele.
 export function needsRotation(conversation, maxChars, maxTurns) {

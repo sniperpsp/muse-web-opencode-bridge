@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting } from "./protocol.js";
-import { checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
+import { capMessages, checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
 import { withBrowserOperationTimeout } from "./browser-operation.js";
@@ -1102,11 +1102,11 @@ async function handleCompletion(req, res) {
       } else if (!conversation.previousMessages.length || !isPrefix(conversation.previousMessages, body.messages)) {
         const budget = MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000;
         const fit = fitHistory(body.messages, budget);
-        requestMessages = initialPrompt(fit.messages, tools, body.tool_choice, { omitted: fit.omitted });
+        requestMessages = initialPrompt(capMessages(fit.messages, budget), tools, body.tool_choice, { omitted: fit.omitted });
         sentFull = true;
       } else {
         const compact = tools.length > 0 && conversation.toolsKey === toolsKey && (conversation.sinceFull || 0) < FULL_INSTRUCTIONS_EVERY;
-        requestMessages = followupPrompt(body.messages.slice(conversation.previousMessages.length), tools, body.tool_choice, { compact });
+        requestMessages = followupPrompt(capMessages(body.messages.slice(conversation.previousMessages.length), MAX_PROMPT_CHARS - toolInstructions(tools, body.tool_choice).length - 3000), tools, body.tool_choice, { compact });
         sentFull = !compact;
       }
       let answer = await submitWithRecovery(sessionId, requestMessages.prompt, requestMessages.files, requestHash, signal);

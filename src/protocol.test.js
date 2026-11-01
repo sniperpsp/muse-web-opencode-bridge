@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
-import { checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
+import { capMessages, checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { updateStatus } from "./updates.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -344,4 +344,18 @@ test("a thread rotates only when it has an address and passed a limit", () => {
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 370000, baseChars: 360000, turns: 1 }, 300000, 40), false);
   assert.equal(needsRotation({ url: "https://muse.ai/thread/x", threadChars: 10, turns: 3 }, 300000, 40), false);
   assert.equal(needsRotation({ threadChars: 999999 }, 300000, 40), false);
+});
+
+test("capMessages encurta resultado gigante de ferramenta e preserva system e última mensagem", () => {
+  const messages = [
+    { role: "system", content: "regras" },
+    { role: "user", content: "pedido" },
+    { role: "tool", content: "x".repeat(90000) },
+  ];
+  const capped = capMessages(messages, 20000);
+  assert.ok(JSON.stringify(capped).length <= 20000);
+  assert.equal(capped[0].content, "regras");
+  assert.equal(capped[1].content, "pedido");
+  assert.match(capped[2].content, /caracteres omitidos/);
+  assert.equal(messages[2].content.length, 90000);
 });
