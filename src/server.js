@@ -72,7 +72,7 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
-function museBrowserOperation(rawOperation, signal, label) {
+function museBrowserOperation(rawOperation, signal, label, timeoutMs = BROWSER_OPERATION_TIMEOUT_MS) {
   const connection = browser;
   // Na primeira mensagem de uma conversa o Gemini navega de /app para /app/<id> e derruba a leitura em curso; ler de novo é seguro.
   const operation = async () => {
@@ -86,7 +86,7 @@ function museBrowserOperation(rawOperation, signal, label) {
   };
   return withBrowserOperationTimeout(operation, {
     signal,
-    timeoutMs: BROWSER_OPERATION_TIMEOUT_MS,
+    timeoutMs,
     label,
     onInterrupt: async (error) => {
       if (!connection || browser !== connection || !connection.isConnected()) return;
@@ -656,7 +656,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
         throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do Gemini. Configure MUSE_SEND_SELECTOR para o botão desta página.");
       }
     }
-    await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio ao Gemini");
+    await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH.test(url.pathname), { timeout: 60000 }), signal, "Confirmar o envio ao Gemini", 65000);
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
@@ -719,7 +719,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
       // ponytail: two in-call reconnects cap retries; the same request remains resumable afterward.
       if (signal.aborted || !recoverable || pending?.requestHash !== requestHash || recoveries >= 2) throw error;
       recoveries++;
-      console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "browser_recovery", attempt: recoveries }));
+      console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "browser_recovery", attempt: recoveries, code: error.code, detail: String(error.message).slice(0, 200) }));
       await waitForBrowserReconnect(signal);
     }
   }
