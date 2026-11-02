@@ -457,3 +457,12 @@ test("parseToolCall: sintaxe DSML nativa do DeepSeek", async () => {
   const t2 = '<｜DSML｜function_calls><｜DSML｜invoke name="read"><｜DSML｜parameter name="path" string="true">x</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜function_calls>';
   assert.equal(parseToolCall(t2, tools)?.arguments.path, "x");
 });
+
+test("parseToolCall: write com conteúdo no markdown bruto do DeepSeek (cerca json externa)", async () => {
+  const { parseToolCall } = await import("./protocol.js");
+  const tools = [{ type: "function", function: { name: "write" } }];
+  const raw = '```json\n{"type":"tool_call","name":"write","arguments":{"path":"/tmp/a.py"}}\n<<<MUSE_FILE_CONTENT_BEGIN>>>\n````\ndef f():\n    return 1\n````\n<<<MUSE_FILE_CONTENT_END>>>\n</opencode_tool_call>\n```';
+  const c = parseToolCall(raw, tools);
+  assert.equal(c?.name, "write");
+  assert.equal(c.arguments.content, "def f():\n    return 1");
+});

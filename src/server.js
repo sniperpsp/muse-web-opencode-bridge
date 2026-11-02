@@ -798,7 +798,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
         changedAt = Date.now();
       } else if ((!reply.busy && Date.now() - changedAt >= 1800) || Date.now() - changedAt >= STALL_MS) {
         // O DeepSeek às vezes não marca a resposta como concluída; texto parado por STALL_MS é tratado como final.
-        return candidate;
+        return rawIfFileBlock(candidate, signal);
       }
     } else if (reply && !reply.busy && hasNewMedia) {
       if (!changedAt) changedAt = Date.now();
@@ -808,6 +808,40 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     }
   }
   throw Object.assign(new Error("A resposta do DeepSeek não foi confirmada no prazo de leitura. O envio foi preservado; repetir a mesma chamada retoma a leitura sem reenviar a mensagem."), { status: 503, code: "request_timeout", retryable: true });
+}
+
+// A página renderiza o markdown: um bloco de 4 crases dentro do bloco json é partido, o código perde a indentação e vira texto solto.
+// O botão "Copiar" da mensagem entrega o markdown bruto, então write/edit com conteúdo de arquivo é lido por ele.
+async function rawAssistantMarkdown(signal) {
+  return museBrowserOperation(async () => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(MUSE_URL).origin }).catch(() => {});
+    await musePage.bringToFront();
+    return musePage.evaluate(async () => {
+      const message = [...document.querySelectorAll(".ds-message")].filter((el) => el.querySelector(".ds-markdown")).pop();
+      const icons = [...(message?.parentElement?.querySelectorAll(".ds-button--icon") || [])].filter((el) => !message.contains(el));
+      const copy = icons.find((el) => el.querySelector("svg path")?.getAttribute("d")?.startsWith("M6.149")) || icons[0];
+      if (!copy) return "";
+      await navigator.clipboard.writeText("");
+      copy.click();
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const text = await navigator.clipboard.readText();
+        if (text) return text;
+      }
+      return "";
+    });
+  }, signal, "Copiar a resposta bruta do DeepSeek");
+}
+
+async function rawIfFileBlock(candidate, signal) {
+  if (!/MUSE_FILE_CONTENT/.test(candidate)) return candidate;
+  try {
+    const raw = await rawAssistantMarkdown(signal);
+    if (raw.includes("<<<MUSE_FILE_CONTENT_BEGIN>>>")) return raw.trim();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+  }
+  return candidate;
 }
 
 async function readMediaSources(signal) {

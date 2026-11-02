@@ -135,7 +135,9 @@ export function transcriptDelta(before, after, prompt) {
 
 // O markdown do DeepSeek engole a tag de abertura; devolve ela quando só o fechamento sobrou.
 function restoreOpenTag(text) {
-  const t = text.trim();
+  let t = text.trim();
+  // O markdown bruto vem embrulhado no bloco ```json do DeepSeek; com conteúdo de arquivo, a cerca externa é tirada.
+  if (/<<<MUSE_FILE_CONTENT_BEGIN>>>/.test(t)) t = t.replace(/^```[a-z]*[ \t]*\n/i, "").replace(/\n```$/, "").trim();
   return /<\/opencode_tool_call>$/i.test(t) && !/<opencode_tool_call>/i.test(t) ? `<opencode_tool_call>\n${t}` : t;
 }
 
