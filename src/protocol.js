@@ -133,18 +133,33 @@ export function transcriptDelta(before, after, prompt) {
   return tail.trim();
 }
 
+// O markdown do DeepSeek engole a tag de abertura; devolve ela quando só o fechamento sobrou.
+function restoreOpenTag(text) {
+  const t = text.trim();
+  return /<\/opencode_tool_call>$/i.test(t) && !/<opencode_tool_call>/i.test(t) ? `<opencode_tool_call>\n${t}` : t;
+}
+
+// O modelo às vezes escreve {"type":"edit",...} sem "name": o tipo é o nome da ferramenta.
+function withName(call, tools) {
+  if (call && typeof call === "object" && typeof call.name !== "string" && tools.some((tool) => tool?.function?.name === call.type)) call.name = call.type;
+  return call;
+}
+
 export function parseToolCall(text, tools = []) {
+  text = restoreOpenTag(text);
   const rawContent = /^<opencode_tool_call>\s*(\{[^\r\n]*\})\r?\n<<<MUSE_FILE_CONTENT_BEGIN>>>\r?\n([\s\S]*?)<<<MUSE_FILE_CONTENT_END>>>\s*<\/opencode_tool_call>$/i.exec(text.trim());
   if (rawContent) {
     try {
-      const call = JSON.parse(rawContent[1]);
+      const call = withName(JSON.parse(rawContent[1]), tools);
       const key = call?.name === "write" ? "content" : call?.name === "edit" ? "newString" : "";
       if (!key || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) return null;
       const requested = tools.some((tool) => tool?.type === "function" && tool.function?.name === call.name);
       if (!requested) return null;
       const content = rawContent[2].replace(/\r?\n$/, "");
       const fenced = /^````(?:text|html|jsx)?\r?\n([\s\S]*?)\r?\n````$/i.exec(content);
-      call.arguments[key] = fenced ? fenced[1] : content;
+      const body = fenced ? fenced[1] : content;
+      // Bloco vazio (o modelo pôs o texto no JSON) não pode apagar o valor já presente.
+      if (body !== "" || typeof call.arguments[key] !== "string") call.arguments[key] = body;
       return { name: call.name, arguments: call.arguments };
     } catch {
       return null;
@@ -152,7 +167,7 @@ export function parseToolCall(text, tools = []) {
   }
   const match = /<opencode_tool_call>\s*([\s\S]*?)\s*<\/opencode_tool_call>/i.exec(text);
   try {
-    const call = JSON.parse(match ? match[1] : responseJson(text));
+    const call = withName(JSON.parse(match ? match[1] : responseJson(text)), tools);
     if (!match && call?.type !== "tool_call") return null;
     if (!call || typeof call !== "object") return null;
     if (typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) return null;

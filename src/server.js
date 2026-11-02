@@ -707,7 +707,7 @@ async function readChatMessages(beforeMessageIds, signal) {
     const assistant = group.matches(selector) ? group : group.querySelector(selector) || group;
     const rawText = assistant?.innerText || "";
     // Cabeçalho do bloco de código do DeepSeek ("json", "Copy", "Download") entra no innerText e quebra o parser de tool_call.
-    const text = rawText.replace(/(^|\n)(?:[ \t]*(?:json|copy code|copiar c[oó]digo|copy|copiar|download|baixar)[ \t]*\n)+(?=[ \t]*[{\[])/gi, "$1");
+    const text = rawText.replace(/(^|\n)(?:[ \t]*[a-z0-9+#-]{1,15}[ \t]*\n)?[ \t]*(?:copy code|copiar c[oó]digo|copy|copiar)[ \t]*\n[ \t]*(?:download|baixar)[ \t]*(?:\n|$)/gi, "$1");
     const jsonCode = assistant?.querySelector('pre code.language-json, pre code')?.innerText;
     // O DeepSeek põe "json" e "Copy code" no cabeçalho do bloco; se só sobra isso além do código, a resposta é o JSON puro.
     const standaloneJson = jsonCode !== undefined && text.replace(jsonCode, "").replace(/json|copy code|copiar c[oó]digo|copy|copiar|download|baixar|\s/gi, "") === "";

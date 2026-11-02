@@ -428,3 +428,12 @@ test("finalText tolera </br> depois do JSON", async () => {
   const tools = [{ type: "function", function: { name: "read" } }];
   assert.equal(parseToolCall('{"type":"tool_call","name":"read","arguments":{"path":"a"}}<br>', tools)?.name, "read");
 });
+
+test("parseToolCall: tag de abertura engolida, type no lugar de name, bloco vazio", async () => {
+  const { parseToolCall } = await import("./protocol.js");
+  const tools = [{ type: "function", function: { name: "edit" } }];
+  const t = '{"type":"edit","arguments":{"path":"a","oldString":"x","newString":"y"}}\n<<<MUSE_FILE_CONTENT_BEGIN>>>\n<<<MUSE_FILE_CONTENT_END>>>\n</opencode_tool_call>';
+  const c = parseToolCall(t, tools);
+  assert.equal(c?.name, "edit");
+  assert.equal(c.arguments.newString, "y");
+});
