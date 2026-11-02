@@ -72,8 +72,18 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
-function museBrowserOperation(operation, signal, label) {
+function museBrowserOperation(rawOperation, signal, label) {
   const connection = browser;
+  // Na primeira mensagem de uma conversa o Gemini navega de /app para /app/<id> e derruba a leitura em curso; ler de novo é seguro.
+  const operation = async () => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await rawOperation(); }
+      catch (error) {
+        if (attempt >= 3 || !/execution context was destroyed/i.test(error?.message || "")) throw error;
+        await sleep(600);
+      }
+    }
+  };
   return withBrowserOperationTimeout(operation, {
     signal,
     timeoutMs: BROWSER_OPERATION_TIMEOUT_MS,
