@@ -145,7 +145,27 @@ function withName(call, tools) {
   return call;
 }
 
+// Sintaxe nativa de ferramentas do DeepSeek (<｜DSML｜ invoke name="read"> ... parameter ...), que ele usa quando ignora o nosso JSON.
+// As barras e espaços variam (｜, ｜｜, |), então o parser só exige "DSML" entre elas.
+const DSML = String.raw`<[｜|\s]*DSML[｜|\s]*`;
+const DSML_END = String.raw`<\/[｜|\s]*DSML[｜|\s]*`;
+export function hasDsml(text) { return new RegExp(`${DSML}(?:function_)?calls?\\b|${DSML}invoke\\b`, "i").test(text); }
+
+function parseDsml(text, tools) {
+  const invoke = new RegExp(`${DSML}invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)${DSML_END}invoke\\s*>`, "i").exec(text);
+  if (!invoke || !tools.some((tool) => tool?.type === "function" && tool.function?.name === invoke[1])) return null;
+  const args = {};
+  const param = new RegExp(`${DSML}parameter\\s+name="([^"]+)"(?:\\s+string="(true|false)")?\\s*>([\\s\\S]*?)${DSML_END}parameter\\s*>`, "gi");
+  for (const [, key, isString, raw] of invoke[2].matchAll(param)) {
+    if (isString?.toLowerCase() === "false") { try { args[key] = JSON.parse(raw.trim()); continue; } catch { /* fica como texto */ } }
+    args[key] = raw;
+  }
+  return { name: invoke[1], arguments: args };
+}
+
 export function parseToolCall(text, tools = []) {
+  const dsml = hasDsml(text) ? parseDsml(text, tools) : null;
+  if (dsml) return dsml;
   text = restoreOpenTag(text);
   const rawContent = /^<opencode_tool_call>\s*(\{[^\r\n]*\})\r?\n<<<MUSE_FILE_CONTENT_BEGIN>>>\r?\n([\s\S]*?)<<<MUSE_FILE_CONTENT_END>>>\s*<\/opencode_tool_call>$/i.exec(text.trim());
   if (rawContent) {
@@ -179,6 +199,7 @@ export function parseToolCall(text, tools = []) {
 }
 
 export function looksLikeToolCall(text) {
+  if (hasDsml(text)) return true;
   return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call"|\{\s*"type"\s*:\s*"[a-z_]+"\s*,\s*"arguments")/i.test(responseJson(text));
 }
 

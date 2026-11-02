@@ -445,3 +445,15 @@ test("parseToolCall: {type:read,arguments} sem name", async () => {
   assert.equal(parseToolCall(t, tools)?.name, "read");
   assert.ok(looksLikeToolCall(t));
 });
+
+test("parseToolCall: sintaxe DSML nativa do DeepSeek", async () => {
+  const { parseToolCall, looksLikeToolCall } = await import("./protocol.js");
+  const tools = [{ type: "function", function: { name: "read" } }];
+  const t = '<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="read">\n<｜｜DSML｜｜ parameter name="path" string="true">src/a.luau</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name="offset" string="false">1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>';
+  const c = parseToolCall(t, tools);
+  assert.deepEqual(c, { name: "read", arguments: { path: "src/a.luau", offset: 1 } });
+  assert.ok(looksLikeToolCall(t));
+  assert.equal(parseToolCall(t, []), null);
+  const t2 = '<｜DSML｜function_calls><｜DSML｜invoke name="read"><｜DSML｜parameter name="path" string="true">x</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜function_calls>';
+  assert.equal(parseToolCall(t2, tools)?.arguments.path, "x");
+});
