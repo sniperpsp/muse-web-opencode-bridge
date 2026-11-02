@@ -480,6 +480,21 @@ async function clickSiteTryAgain(signal) {
   return clicked > 0;
 }
 
+// O DeepSeek abre um captcha de quebra-cabeça quando desconfia de automação; sem alguém resolver, a resposta nunca chega.
+const CAPTCHA_TEXT_RE = /put the correct piece|drag the slider|slide to (?:complete|verify)|verify you are (?:a )?human|arraste a pe[çc]a|arraste o controle|resolva o captcha/i;
+const CAPTCHA_SELECTOR = process.env.MUSE_CAPTCHA_SELECTOR || '[id*="captcha" i], [class*="captcha" i], iframe[src*="captcha" i], [class*="geetest" i], [id*="tcaptcha" i]';
+let captchaActive = false;
+async function museCaptcha(signal) {
+  const found = await museBrowserOperation(() => musePage.evaluate(({ selector, source }) => {
+    const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 40; };
+    return [...document.querySelectorAll(selector)].some(visible) || new RegExp(source, "i").test(document.body.innerText);
+  }, { selector: CAPTCHA_SELECTOR, source: CAPTCHA_TEXT_RE.source }), signal, "Verificar captcha").catch(() => false);
+  if (found && !captchaActive) console.warn(JSON.stringify({ event: "muse_captcha", phase: "required", hint: `Resolva em ${VNC_URL} ou no painel` }));
+  if (!found && captchaActive) console.info(JSON.stringify({ event: "muse_captcha", phase: "cleared" }));
+  captchaActive = found;
+  return found;
+}
+
 async function museThreadBroken(signal) {
   return museBrowserOperation(() => musePage.evaluate(() => /something went wrong|network error|error in message stream|an error occurred/i.test(document.body.innerText)), signal, "Verificar se a conversa quebrou").catch(() => false);
 }
@@ -747,6 +762,10 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     signal.throwIfAborted();
     await sleep(500);
     await rememberThread();
+    if (await museCaptcha(signal)) {
+      // O envio fica pendente: repetir a mesma chamada depois de resolver retoma a leitura sem reenviar.
+      throw Object.assign(new Error("O DeepSeek pediu um captcha (quebra-cabeça). Resolva no painel http://127.0.0.1:4337 (clique na imagem) ou no noVNC http://127.0.0.1:4338 e repita a mesma mensagem: ela não será reenviada em duplicidade."), { status: 503, code: "captcha_required", retryable: true });
+    }
     const messages = await readChatMessages(beforeMessageIds, signal);
     const user = messages.findLast((message) => message.role === "user" && !beforeMessageIds.includes(message.id));
     if (user?.error) {
@@ -1248,7 +1267,7 @@ async function handleControl(req, res, url) {
     }
     return sendJson(res, 200, {
       ready: Boolean(musePage && !musePage.isClosed() && browser?.isConnected()), authenticated: museAuthenticated,
-      state: browserState, error: browserError, url: musePage?.url() || "",
+      state: browserState, error: captchaActive ? "O DeepSeek pediu captcha: resolva o quebra-cabeça na tela abaixo (ou no noVNC)." : browserError, captcha: captchaActive, url: musePage?.url() || "",
       request: activeRequestHash ? activeRequestHash.slice(0, 12) : null,
       queue: queue.status(),
       session: activeSessionId || null,
