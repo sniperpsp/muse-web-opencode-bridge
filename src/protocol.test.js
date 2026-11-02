@@ -421,3 +421,10 @@ test("guardrail: retomada de envio pendente não exige a caixa de mensagem (evit
   const code = await readFile(fileURLToPath(new URL("./server.js", import.meta.url)), "utf8");
   assert.match(code, /pendingSubmission\?\.phase !== "waiting"/);
 });
+
+test("finalText tolera </br> depois do JSON", async () => {
+  const { finalText, parseToolCall } = await import("./protocol.js");
+  assert.equal(finalText('{"type":"final","text":"oi\\nmundo"}</br>'), "oi\nmundo");
+  const tools = [{ type: "function", function: { name: "read" } }];
+  assert.equal(parseToolCall('{"type":"tool_call","name":"read","arguments":{"path":"a"}}<br>', tools)?.name, "read");
+});

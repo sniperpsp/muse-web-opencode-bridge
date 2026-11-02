@@ -168,7 +168,12 @@ export function looksLikeToolCall(text) {
 }
 
 function responseJson(text) {
-  return text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1");
+  // O DeepSeek às vezes deixa "</br>" ou texto solto depois do JSON; fica só o objeto, do primeiro "{" ao último "}".
+  const unfenced = text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1").replace(/(?:\s*<\/?br\s*\/?>)+\s*$/i, "");
+  const trimmed = unfenced.trim();
+  if (!trimmed.startsWith("{")) return unfenced;
+  const end = trimmed.lastIndexOf("}");
+  return end > 0 ? trimmed.slice(0, end + 1) : unfenced;
 }
 
 export function finalText(text) {
