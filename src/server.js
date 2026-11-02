@@ -111,11 +111,7 @@ async function waitForBrowserReconnect(signal) {
   });
 }
 
-function scheduleReconnect() {
-  if (shuttingDown || reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = undefined;
-    // Envio já entregue ao Gemini que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
+// Envio já entregue ao Gemini que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
 // e deixa a resposta pronta; quando o OpenCode repetir a chamada, ela volta do cache.
 async function resumePending() {
   await sleep(5000);
@@ -139,8 +135,12 @@ async function resumePending() {
     }
   }
 }
-resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
-openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
+
+function scheduleReconnect() {
+  if (shuttingDown || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
       browserError = error.message;
       browserState = "Aguardando navegador para reconectar";
       // Chromium vivo mas sem responder ao CDP (aba travada): duas falhas seguidas e ele é morto; o ensureAuthChromium sobe outro com o mesmo perfil.
@@ -149,6 +149,9 @@ openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
     });
   }, 2500);
 }
+
+// Uma vez por inicialização do serviço (antes rodava a cada reconexão e empilhava loops de reenvio que travavam a sessão com session_busy).
+resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
 
 let reconnectFailures = 0;
 function restartChromium(reason) {
