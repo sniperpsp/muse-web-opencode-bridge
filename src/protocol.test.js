@@ -437,3 +437,11 @@ test("parseToolCall: tag de abertura engolida, type no lugar de name, bloco vazi
   assert.equal(c?.name, "edit");
   assert.equal(c.arguments.newString, "y");
 });
+
+test("parseToolCall: {type:read,arguments} sem name", async () => {
+  const { parseToolCall, looksLikeToolCall } = await import("./protocol.js");
+  const tools = [{ type: "function", function: { name: "read" } }];
+  const t = '{"type":"read","arguments":{"path":"a","limit":60}}';
+  assert.equal(parseToolCall(t, tools)?.name, "read");
+  assert.ok(looksLikeToolCall(t));
+});

@@ -141,7 +141,7 @@ function restoreOpenTag(text) {
 
 // O modelo às vezes escreve {"type":"edit",...} sem "name": o tipo é o nome da ferramenta.
 function withName(call, tools) {
-  if (call && typeof call === "object" && typeof call.name !== "string" && tools.some((tool) => tool?.function?.name === call.type)) call.name = call.type;
+  if (call && typeof call === "object" && typeof call.name !== "string" && tools.some((tool) => tool?.function?.name === call.type)) { call.name = call.type; call.type = "tool_call"; }
   return call;
 }
 
@@ -179,7 +179,7 @@ export function parseToolCall(text, tools = []) {
 }
 
 export function looksLikeToolCall(text) {
-  return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call")/i.test(responseJson(text));
+  return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call"|\{\s*"type"\s*:\s*"[a-z_]+"\s*,\s*"arguments")/i.test(responseJson(text));
 }
 
 function responseJson(text) {
