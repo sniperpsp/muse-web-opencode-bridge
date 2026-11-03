@@ -71,11 +71,11 @@ for (const [name, port] of [["MUSE_BRIDGE_PORT", API_PORT], ["MUSE_CDP_PORT", CD
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 
-function museBrowserOperation(operation, signal, label) {
+function museBrowserOperation(operation, signal, label, timeoutMs = BROWSER_OPERATION_TIMEOUT_MS) {
   const connection = browser;
   return withBrowserOperationTimeout(operation, {
     signal,
-    timeoutMs: BROWSER_OPERATION_TIMEOUT_MS,
+    timeoutMs,
     label,
     onInterrupt: async (error) => {
       if (!connection || browser !== connection || !connection.isConnected()) return;
@@ -736,12 +736,29 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
   const started = Date.now();
   let lastText = "";
   let changedAt = 0;
+  let lastReturnAt = 0;
   while (Date.now() - started < REQUEST_TIMEOUT_MS) {
     signal.throwIfAborted();
     await sleep(500);
     await rememberThread();
     const messages = await readChatMessages(beforeMessageIds, signal);
     const user = messages.findLast((message) => message.role === "user" && !beforeMessageIds.includes(message.id));
+    if (!user && conversation.url) {
+      // A aba saiu da conversa (nova conversa, recarga): a resposta está na conversa salva, então volta para ela.
+      const here = new URL(musePage.url());
+      if (here.href !== conversation.url && Date.now() - lastReturnAt > 10000) {
+        lastReturnAt = Date.now();
+        console.info(JSON.stringify({ event: "muse_submission", request: conversation.pendingSubmission?.requestHash?.slice(0, 12), phase: "returning_to_thread" }));
+        await museBrowserOperation(() => musePage.goto(conversation.url, { waitUntil: "domcontentloaded", timeout: 30000 }), signal, "Voltar à conversa", 35000);
+        continue;
+      }
+      if (here.href === conversation.url && messages.length && Date.now() - started > 120000) {
+        // Conversa aberta há 2 min e a mensagem não está nela: não chegou ao site, então solta o pendente para a nova tentativa reenviar.
+        conversation.pendingSubmission = undefined;
+        await saveConversations();
+        throw Object.assign(new Error("A mensagem não apareceu na conversa do ChatGPT. Tente novamente: a ponte reenvia sem duplicar."), { status: 503, code: "muse_delivery_failed", retryable: true });
+      }
+    }
     if (user?.error) {
       if (isPromptSizeError(user.error)) {
         const received = conversation.pendingSubmission.prompt.length;
