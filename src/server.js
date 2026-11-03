@@ -480,6 +480,14 @@ async function clickSiteTryAgain(signal) {
   return clicked > 0;
 }
 
+// Larga a conversa atual do ChatGPT: a próxima chamada abre uma janela nova e refaz o prompt completo.
+async function abandonThread(message) {
+  Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined, pendingSubmission: undefined });
+  delete conversation.pendingBody;
+  await saveConversations();
+  return Object.assign(new Error(message), { status: 503, code: "muse_thread_reset", retryable: true });
+}
+
 async function museThreadBroken(signal) {
   return museBrowserOperation(() => musePage.evaluate(() => /something went wrong|network error|error in message stream|an error occurred/i.test(document.body.innerText)), signal, "Verificar se a conversa quebrou").catch(() => false);
 }
@@ -669,10 +677,7 @@ async function submitWithRecovery(sessionId, prompt, files, requestHash, signal,
       if (error.code === "muse_page_not_ready" && conversation.url && !signal.aborted && await museThreadBroken(signal)) {
         // A thread não aceita mais envios nem com o Try again: troca por outra; a nova tentativa refaz o prompt completo.
         console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "thread_abandoned", url: conversation.url }));
-        Object.assign(conversation, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined, pendingSubmission: undefined });
-        delete conversation.pendingBody;
-        await saveConversations();
-        throw Object.assign(new Error("A conversa do ChatGPT quebrou e foi trocada por uma nova. Repita a mesma solicitação."), { status: 503, code: "muse_thread_reset", retryable: true });
+        throw await abandonThread("A conversa do ChatGPT quebrou e foi trocada por uma nova. Repita a mesma solicitação.");
       }
       const pending = conversation.pendingSubmission;
       const recoverable = isBrowserRecoveryError(error) || error.name === "TimeoutError";
@@ -740,6 +745,7 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
   let lastText = "";
   let changedAt = 0;
   let lastReturnAt = 0;
+  let lastBrokenCheck = 0;
   while (Date.now() - started < REQUEST_TIMEOUT_MS) {
     signal.throwIfAborted();
     await sleep(500);
@@ -763,6 +769,11 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
       }
     }
     if (user?.error) {
+      if (isPromptSizeError(user.error) && conversation.url) {
+        // A conversa acumulou texto demais: abre uma janela nova (a nova tentativa manda o prompt completo nela).
+        console.warn(JSON.stringify({ event: "muse_submission", phase: "thread_abandoned", reason: "message_too_long", url: conversation.url }));
+        throw await abandonThread("O ChatGPT recusou a mensagem por tamanho nesta conversa; foi aberta uma conversa nova. Repita a mesma solicitação.");
+      }
       if (isPromptSizeError(user.error)) {
         const received = conversation.pendingSubmission.prompt.length;
         const suggested = Math.max(1, Math.min(MAX_PROMPT_CHARS, Math.floor(received / 2)));
@@ -782,6 +793,16 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
       throw Object.assign(new Error(`O ChatGPT não confirmou o envio: ${user.error}. Confira esta conversa no painel. A ponte preservou o envio para evitar duplicação.`), { status: 409 });
     }
     const reply = currentReply(messages, beforeMessageIds);
+    if (!reply?.text && !reply?.busy && Date.now() - started > 30000 && Date.now() - lastBrokenCheck > 10000) {
+      lastBrokenCheck = Date.now();
+      if (await museThreadBroken(signal)) {
+        // "Something went wrong" sem resposta: tenta o Try again e, se persistir, troca por uma conversa nova.
+        if (!(await clickSiteTryAgain(signal)) || (await sleep(6000), await museThreadBroken(signal))) {
+          console.warn(JSON.stringify({ event: "muse_submission", phase: "thread_abandoned", reason: "broken_while_waiting", url: conversation.url }));
+          throw await abandonThread("A conversa do ChatGPT quebrou durante a resposta e foi trocada por uma nova. Repita a mesma solicitação.");
+        }
+      }
+    }
     const currentMedia = await readMediaSources(signal);
     const hasNewMedia = currentMedia.some((source) => source && !beforeMedia.includes(source));
     let candidate = reply?.text || "";
