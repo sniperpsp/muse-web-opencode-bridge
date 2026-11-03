@@ -697,6 +697,9 @@ async function readChatMessages(beforeMessageIds, signal) {
     const streaming = [...document.querySelectorAll(streamingSelector)].some((el) => el.getBoundingClientRect().width);
     const all = groups.map((group) => ({ group, id: group.getAttribute("data-content-search-unit-key") }));
     const lastAssistant = all.filter((item) => item.id.endsWith(":assistant")).pop();
+    // O aviso vermelho do site ("message too long", "Retry") fica fora do grupo da mensagem: vale para o último envio do usuário.
+    const lastUser = all.filter((item) => item.id.endsWith(":user")).pop();
+    const pageAlert = [...document.querySelectorAll('[role="alert"]')].map((el) => el.textContent?.trim()).find((text) => /too (?:long|large)|muito (?:long|grande)|failed to (?:send|deliver)|falha (?:na|ao) (?:entrega|enviar)/i.test(text || ""));
     return all.filter(({ id }) => !previous.has(id)).map(({ group, id }) => {
     const role = id.endsWith(":user") ? "user" : "assistant";
     const assistant = group.matches(selector) ? group : group.querySelector(selector) || group;
@@ -707,7 +710,7 @@ async function readChatMessages(beforeMessageIds, signal) {
     const hasResponseMedia = group.querySelector("img, audio, video, a[download]");
     return {
       id, role,
-      error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() : undefined,
+      error: role === "user" ? group.querySelector('[role="alert"]')?.textContent?.trim() || (lastUser?.id === id ? pageAlert : undefined) : undefined,
       text: role === "assistant" ? standaloneJson ? jsonCode : wantMarkdown ? toMarkdown(assistant) || text : text : "",
       // Ocupada enquanto o botão "Stop" existe (só vale para a última resposta); sem ele a resposta está terminada.
       busy: role === "assistant" && (!assistant || (streaming && lastAssistant?.id === id)),
