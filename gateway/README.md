@@ -41,3 +41,10 @@ Teste da tradução: `node gateway/test.mjs`. Limites medidos de cada ponte e a 
 - Uma chamada de ferramenta por turno (limite da ponte). Imagens são omitidas.
 - Tokens de uso são estimados; é lento (passa pela interface web) e vale o mesmo risco dos termos de uso das pontes.
 - Valide em tarefas reais antes de confiar: só foi testado lendo um arquivo.
+
+## Ligar sob demanda
+
+Se um backend tiver `"container": "<nome do container docker>"` em `BACKENDS`, o gateway liga o container (`docker start`) quando um pedido o escolhe,
+espera a ponte responder (`GATEWAY_WARM_MS`, padrão 15000, para o navegador abrir) e repete na mesma ponte enquanto ela responde 503 "reconectando".
+Depois de `GATEWAY_IDLE_MS` (padrão 600000 = 10 min) sem uso, desliga. **Só desliga o que ele mesmo ligou**: um container que já estava de pé
+(por exemplo usado direto pelo OpenCode) nunca é parado. Requer `docker` no PATH de quem roda o gateway.

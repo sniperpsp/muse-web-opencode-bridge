@@ -8,6 +8,7 @@
 //   GATEWAY_PORT   padrão 4350 ; GATEWAY_HOST padrão 127.0.0.1
 import { createServer } from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { execFile } from "node:child_process";
 
 const UPSTREAM_URL = (process.env.UPSTREAM_URL || "http://127.0.0.1:4337/v1").replace(/\/$/, "");
 const UPSTREAM_KEY = process.env.UPSTREAM_KEY || "";
@@ -42,6 +43,45 @@ export function chainFor(model, backends = BACKENDS, routes = ROUTES) {
 }
 const COOLDOWN_MS = Number(process.env.GATEWAY_COOLDOWN_MS || 60000);
 const downUntil = new Map();
+
+// Liga/desliga sob demanda: backend com "container" é iniciado (docker start) quando um pedido o escolhe e parado após
+// IDLE_MS sem uso. Só para o que o próprio gateway ligou (nunca derruba container que já estava de pé, p.ex. usado pelo OpenCode).
+const IDLE_MS = Number(process.env.GATEWAY_IDLE_MS || 600000);
+const WARM_MS = Number(process.env.GATEWAY_WARM_MS || 15000);
+const startedByUs = new Set();
+const lastUse = new Map();
+const inflight = new Map();
+const starting = new Map();
+const docker = (...args) => new Promise((resolve) => execFile("docker", args, { timeout: 60000 }, (e, out) => resolve(e ? "" : String(out).trim())));
+export const isWarming = (msg) => /reconect|carregando|n[aã]o ficou pronta|indispon[ií]vel|ainda n[aã]o/i.test(msg || "");
+async function ensureUp(b) {
+  if (!b.container) return;
+  lastUse.set(b.name, Date.now());
+  if ((await docker("inspect", "-f", "{{.State.Running}}", b.container)) === "true") return;
+  if (!starting.has(b.name)) {
+    starting.set(b.name, (async () => {
+      console.log(`[${new Date().toISOString()}] ligando ${b.container}`);
+      await docker("start", b.container);
+      startedByUs.add(b.name);
+      for (let i = 0; i < 45; i++) {
+        const r = await fetch(`${b.url.replace(/\/$/, "")}/models`, { headers: { authorization: `Bearer ${b.key}` }, signal: AbortSignal.timeout(2000) }).catch(() => null);
+        if (r?.ok) break;
+        await new Promise((r2) => setTimeout(r2, 2000));
+      }
+      await new Promise((r2) => setTimeout(r2, WARM_MS)); // o navegador da ponte ainda precisa abrir a página
+    })().finally(() => starting.delete(b.name)));
+  }
+  await starting.get(b.name);
+}
+setInterval(async () => {
+  for (const b of BACKENDS) {
+    if (!b.container || !startedByUs.has(b.name) || inflight.get(b.name) > 0) continue;
+    if (Date.now() - (lastUse.get(b.name) || 0) < IDLE_MS) continue;
+    console.log(`[${new Date().toISOString()}] desligando ${b.container} (ocioso)`);
+    await docker("stop", b.container);
+    startedByUs.delete(b.name);
+  }
+}, 60000).unref();
 if (!BACKENDS.length || BACKENDS.some((b) => !b.key)) { console.error("Defina UPSTREAM_KEY (ou BACKENDS com key em todos)."); process.exit(1); }
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -213,12 +253,20 @@ async function handleMessages(req, res) {
       if (size > b.maxChars) { last = new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
       console.log(`[${new Date().toISOString()}] /v1/messages -> ${b.name}: ${size} chars, ${payload.tools?.length || 0} ferramentas`);
       try {
-        const up = await fetch(`${b.url.replace(/\/$/, "")}/chat/completions`, {
-          method: "POST", signal: abort.signal,
-          headers: { "content-type": "application/json", authorization: `Bearer ${b.key}`, "x-opencode-session-id": sessionId(body) },
-          body: JSON.stringify(payload),
-        });
-        const data = await up.json().catch(() => ({}));
+        inflight.set(b.name, (inflight.get(b.name) || 0) + 1);
+        await ensureUp(b);
+        let up, data;
+        for (let attempt = 0; ; attempt++) {
+          up = await fetch(`${b.url.replace(/\/$/, "")}/chat/completions`, {
+            method: "POST", signal: abort.signal,
+            headers: { "content-type": "application/json", authorization: `Bearer ${b.key}`, "x-opencode-session-id": sessionId(body) },
+            body: JSON.stringify(payload),
+          });
+          data = await up.json().catch(() => ({}));
+          // ponte recém-ligada ainda abrindo o navegador: espera e repete na mesma ponte
+          if (up.status === 503 && attempt < 6 && isWarming(data?.error?.message)) { await new Promise((r2) => setTimeout(r2, 8000)); continue; }
+          break;
+        }
         if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
         message = fromOpenAI(data, model);
         break;
@@ -227,7 +275,7 @@ async function handleMessages(req, res) {
         console.log(`[${new Date().toISOString()}] ${b.name} falhou: ${e.message.slice(0, 120)}`);
         downUntil.set(b.name, Date.now() + COOLDOWN_MS);
         last = e;
-      }
+      } finally { inflight.set(b.name, Math.max(0, (inflight.get(b.name) || 1) - 1)); lastUse.set(b.name, Date.now()); }
     }
     if (!message) throw last || new Error("nenhuma ponte disponível");
     if (stream) streamMessage(res, message); else json(res, 200, message);

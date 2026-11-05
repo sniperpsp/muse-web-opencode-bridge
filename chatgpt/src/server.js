@@ -398,6 +398,8 @@ async function openMuseBrowser() {
     });
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
+    // Sem GPU, animações do site mantêm o Chromium com CPU alta; desligar derruba o consumo (ver LIMITES.md, Gemini: ~220% -> ~3%).
+    await context.addInitScript(() => { const add = () => { const st = document.createElement("style"); st.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}"; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }).catch(() => {});
     const museOrigin = new URL(MUSE_URL).origin;
     musePage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
@@ -415,6 +417,8 @@ async function openMuseBrowser() {
     });
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
+    // Sem GPU, animações do site mantêm o Chromium com CPU alta; desligar derruba o consumo (ver LIMITES.md, Gemini: ~220% -> ~3%).
+    await context.addInitScript(() => { const add = () => { const st = document.createElement("style"); st.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}"; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }).catch(() => {});
     const museOrigin = new URL(MUSE_URL).origin;
     musePage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
@@ -449,7 +453,10 @@ async function openMuseBrowser() {
     watchPrimaryBrowser(browser);
     const state = await readSavedSession();
     context = await browser.newContext(state ? { storageState: state } : {});
+    // Sem GPU, animações do site mantêm o Chromium com CPU alta; desligar derruba o consumo (ver LIMITES.md, Gemini: ~220% -> ~3%).
+    await context.addInitScript(() => { const add = () => { const st = document.createElement("style"); st.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}"; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }).catch(() => {});
     musePage = await context.newPage();
+    await musePage.emulateMedia({ reducedMotion: "reduce" }).catch(() => {});
     await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
   }
   musePage.setDefaultTimeout(BROWSER_OPERATION_TIMEOUT_MS);
