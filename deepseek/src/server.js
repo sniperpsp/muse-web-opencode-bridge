@@ -119,7 +119,18 @@ function scheduleReconnect() {
   if (shuttingDown || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
-    // Envio já entregue ao DeepSeek que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
+    openMuseBrowser().then(() => { reconnectFailures = 0; }).catch((error) => {
+      // Chromium vivo mas sem responder ao CDP (aba travada): duas falhas seguidas e ele é morto; o ensureAuthChromium sobe outro com o mesmo perfil.
+      if (++reconnectFailures >= 2) restartChromium(`CDP sem resposta após ${reconnectFailures} tentativas`);
+      browserError = error.message;
+      browserState = "Aguardando navegador para reconectar";
+      scheduleReconnect();
+    });
+  }, 2500);
+}
+
+// Uma vez por inicialização (antes rodava a cada reconexão, empilhava loops de reenvio e travava a sessão com session_busy).
+// Envio já entregue ao DeepSeek que ficou sem resposta por causa de um reinício: repete a mesma chamada (o hash é igual, então só retoma a leitura)
 // e deixa a resposta pronta; quando o OpenCode repetir a chamada, ela volta do cache.
 async function resumePending() {
   await sleep(5000);
@@ -144,13 +155,39 @@ async function resumePending() {
   }
 }
 resumePending().catch((error) => console.error(`Falha ao retomar envios pendentes: ${error.message}`));
-openMuseBrowser().catch((error) => {
-      browserError = error.message;
-      browserState = "Aguardando navegador para reconectar";
-      scheduleReconnect();
-    });
-  }, 2500);
+
+let reconnectFailures = 0;
+function restartChromium(reason) {
+  if (!authChromiumProcess || authChromiumProcess.exitCode !== null || authChromiumProcess.signalCode !== null) return;
+  console.warn(JSON.stringify({ event: "muse_watchdog", action: "restart_chromium", reason }));
+  reconnectFailures = 0;
+  authChromiumProcess.kill("SIGKILL");
 }
+
+// A aba acumula memória e CPU enquanto fica aberta com conversa grande e o CDP para de responder.
+// Ociosa (sem chamada, fila ou envio pendente), a aba é recarregada quando passa do limite de heap ou de idade; se nem responde, o Chromium é reiniciado.
+const RECYCLE_HEAP_MB = Number(process.env.MUSE_RECYCLE_HEAP_MB || 700);
+const RECYCLE_AGE_MS = Number(process.env.MUSE_RECYCLE_AGE_MS || 2 * 3600 * 1000);
+const WATCHDOG_MS = Number(process.env.MUSE_WATCHDOG_MS || 5 * 60 * 1000);
+let pageLoadedAt = Date.now();
+async function recycleIdlePage() {
+  const q = queue.status();
+  const pending = [...conversations.values()].some((c) => c.pendingSubmission);
+  if (!musePage || shuttingDown || q.active_session || q.waiting || pending || activeRequestHash) return;
+  try {
+    const heapMb = await Promise.race([
+      musePage.evaluate(() => (performance.memory?.usedJSHeapSize || 0) / 1048576),
+      sleep(15000).then(() => { throw new Error("aba sem resposta"); }),
+    ]);
+    if (heapMb < RECYCLE_HEAP_MB && Date.now() - pageLoadedAt < RECYCLE_AGE_MS) return;
+    console.info(JSON.stringify({ event: "muse_watchdog", action: "recycle_page", heapMb: Math.round(heapMb), ageMin: Math.round((Date.now() - pageLoadedAt) / 60000) }));
+    await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    pageLoadedAt = Date.now();
+  } catch (error) {
+    restartChromium(`aba não respondeu ao watchdog: ${error.message}`);
+  }
+}
+setInterval(() => { recycleIdlePage().catch(() => {}); }, WATCHDOG_MS).unref();
 
 function portIsOpen(host, port, timeout = 500) {
   return new Promise((resolve) => {
