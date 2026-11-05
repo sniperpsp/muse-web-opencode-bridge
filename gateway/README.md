@@ -68,7 +68,7 @@ Réplicas atuais: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–
 ## Chamada de ferramenta escrita como texto
 
 Se a ponte devolve como texto algo como `{"type":"grep","pattern":"x"}` ou `{"name":"grep","arguments":{...}}`, o gateway converte em `tool_use`
-**somente se o nome for de uma ferramenta que o cliente declarou** (`salvageToolCall`); nos demais casos segue como texto. Cada recuperação aparece no log
+**somente se o nome (ou um apelido conhecido, como `shell` → `bash`) for de uma ferramenta que o cliente declarou**; ignora lixo antes do JSON (cabeçalho "json" e numeração de linhas do bloco de código) (`salvageToolCall`); nos demais casos segue como texto. Cada recuperação aparece no log
 ("chamada de ferramenta recuperada do texto"). Sem isso o cliente trata como resposta final e o turno termina sem o trabalho feito.
 
 ## Histórico grande (compactação)

@@ -232,21 +232,45 @@ export function unwrapFinal(t) {
 // ---- OpenAI -> Anthropic -------------------------------------------------
 // O modelo web às vezes escreve a chamada de ferramenta como texto em formato próprio, ex.: {"type":"grep","pattern":"x"} ou
 // {"name":"grep","arguments":{...}}. Só vira tool_use se o nome bater com uma ferramenta que o cliente declarou; senão segue como texto.
+const TOOL_ALIAS = { shell: "bash", sh: "bash", terminal: "bash", command: "bash", cmd: "bash", run: "bash", exec: "bash", execute: "bash", run_command: "bash",
+  read_file: "read", cat: "read", view: "read", write_file: "write", create_file: "write", edit_file: "edit", search: "grep", ripgrep: "grep", rg: "grep", find: "glob", ls: "list", list_files: "list" };
+// Acha o último objeto JSON do texto (ignora lixo antes, como "json" + numeração de linhas do bloco de código) e devolve { obj, pre }.
+function extractJson(text) {
+  let s = String(text).trim().replace(/```(?:json)?/gi, "").trim();
+  const open = [...s].map((c, i) => (c === "{" ? i : -1)).filter((i) => i >= 0);
+  for (const i of open) { // do mais externo para o mais interno: o primeiro que fecha o texto inteiro até o último "}"
+    const end = s.lastIndexOf("}");
+    if (end < i) break;
+    try { const obj = JSON.parse(s.slice(i, end + 1)); return { obj, pre: s.slice(0, i) }; } catch { /* tenta o próximo "{" */ }
+  }
+  return null;
+}
+// O modelo web às vezes escreve a chamada de ferramenta como texto em formato próprio, ex.: {"type":"grep","pattern":"x"},
+// {"name":"grep","arguments":{...}} ou {"type":"tool_call","name":"shell",...}. Só vira tool_use se o nome (ou um apelido conhecido) bater
+// com uma ferramenta que o cliente declarou; senão segue como texto. Devolve { name, input, pre } (pre = texto útil antes do JSON).
 export function salvageToolCall(text, toolNames = []) {
   if (!toolNames.length) return null;
-  let s = String(text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  let o;
-  try { o = JSON.parse(s); } catch { return null; }
-  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
-  const find = (n) => toolNames.find((t) => t.toLowerCase() === String(n).toLowerCase());
+  const ex = extractJson(text);
+  if (!ex || !ex.obj || typeof ex.obj !== "object" || Array.isArray(ex.obj)) return null;
+  const o = ex.obj;
+  const find = (n) => {
+    const k = String(n).toLowerCase();
+    return toolNames.find((t) => t.toLowerCase() === k) || (TOOL_ALIAS[k] && toolNames.find((t) => t.toLowerCase() === TOOL_ALIAS[k]));
+  };
+  // texto antes do JSON sem o cabeçalho "json" nem as linhas só de número
+  const pre = ex.pre.split("\n").filter((l) => !/^\s*(json|\d+)\s*$/i.test(l)).join("\n").trim();
+  const done = (name, input) => {
+    if (name.toLowerCase() === "bash" && input && input.command === undefined) { const c = input.cmd ?? input.script; if (c !== undefined) { input = { ...input, command: c }; delete input.cmd; delete input.script; } }
+    return { name, input, pre };
+  };
   const named = find(o.name ?? o.tool ?? o.function);
   if (named && (o.arguments || o.input || o.args || o.parameters) && (o.type === undefined || /tool|call|use/i.test(String(o.type)))) {
     let a = o.arguments ?? o.input ?? o.args ?? o.parameters;
     if (typeof a === "string") { try { a = JSON.parse(a); } catch { return null; } }
-    return { name: named, input: a && typeof a === "object" ? a : {} };
+    return done(named, a && typeof a === "object" ? a : {});
   }
   const byType = typeof o.type === "string" && o.type !== "final" ? find(o.type) : undefined;
-  if (byType) { const { type, ...rest } = o; return { name: byType, input: rest }; }
+  if (byType) { const { type, ...rest } = o; return done(byType, rest); }
   return null;
 }
 export function fromOpenAI(res, model, toolNames = []) {
@@ -256,6 +280,7 @@ export function fromOpenAI(res, model, toolNames = []) {
   const salvaged = !msg.tool_calls?.length && msg.content ? salvageToolCall(msg.content, toolNames) : null;
   if (salvaged) {
     console.log(`[${new Date().toISOString()}] chamada de ferramenta recuperada do texto: ${salvaged.name}`);
+    if (salvaged.pre) content.push({ type: "text", text: salvaged.pre });
     content.push({ type: "tool_use", id: `toolu_${randomBytes(10).toString("hex")}`, name: salvaged.name, input: salvaged.input });
   } else if (msg.content) content.push({ type: "text", text: unwrapFinal(msg.content) });
   for (const c of msg.tool_calls || []) {
