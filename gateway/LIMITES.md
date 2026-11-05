@@ -31,7 +31,8 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 | | | 100k | **parcial**: o site corta o texto colado ("[... 5002 caracteres omitidos]") e avisa; perde o meio | 35 s | |
 
 | **MiniMax** | minimax-web | 30k | leu os 3 | 6 s | 30k |
-| | | 95k | **impraticável**: ficou "Processing" por mais de 4 min (modelo M3.1-Flash pensando) | >240 s | |
+| | | 90k | **leu os 3** (12 s), depois que o captcha foi resolvido | 12 s | 90k+ |
+| | | 95k (antes do captcha) | travou: o site pediu captcha; sem resolver, ficou "Processing" para sempre | >240 s | |
 
 ## Conclusões
 
@@ -47,7 +48,7 @@ Por isso o tamanho útil de conversa é bem menor que o limite bruto.
 - **Kimi** (`PROVIDER=kimi`): leu 30k, falhou em 100k. A conta gratuita **esgota rápido**: depois de ~8 chamadas (algumas grandes) o site passou a mostrar "Too many people are chatting" e recusa tudo. A ponte detecta o pop-up e devolve **429 `provider_quota`** (o gateway deve tratar como cota esgotada e usar outra ponte).
 - **Z.ai** (`PROVIDER=zai`): leu 30k; a partir de 100k **perde o miolo do texto** sem avisar (pior que falhar, pois a resposta parece válida). Usar só até ~30k.
 - **Mistral** (`PROVIDER=mistral`): rápido (16 s), confiável até **60k**; em 100k o Le Chat corta o miolo da colagem e avisa. Bom para subagentes.
-- **MiniMax** (`PROVIDER=minimax`, agent.minimax.io): muito rápido em prompts pequenos (6 s com 30k), mas com ~95k fica minutos pensando. **Cota: 400 créditos por dia, 1 crédito por chamada** (informado pelo usuário). Usar só até ~30k e contar chamadas.
+- **MiniMax** (`PROVIDER=minimax`, agent.minimax.io): rápido (6 s com 30k, 12 s com 90k). O travamento em ~95k era **captcha** não resolvido, não limite de tamanho; com captcha resolvido leu 90k. **Cota: 400 créditos por dia, 1 crédito por chamada** (informado pelo usuário). Teto real ainda não medido acima de 90k; contar chamadas.
 - Pontes novas usam a imagem única `universal/` (um container por provedor, adaptador em `universal/src/sites/<provedor>.js`).
 
 ## Regra de roteamento adotada
