@@ -24,10 +24,10 @@ export function stampMessages([unitSelector, idAttr]) {
 
 // Papel decidido pelo id. Funções sem closure: são serializadas e reavaliadas dentro da página (ver readChatMessages).
 export function messageRole(id) {
-  return id.endsWith(":user") ? "user" : "assistant";
+  return (id || "").endsWith(":user") ? "user" : "assistant";
 }
 export function isAssistantMessageId(id) {
-  return id.endsWith(":assistant");
+  return (id || "").endsWith(":assistant");
 }
 
 // Texto da resposta do assistente dentro da unidade de mensagem.

@@ -47,7 +47,19 @@ export function chainFor(model, backends = BACKENDS, routes = ROUTES, demand = 0
     names = routes[key] || routes.default;
   }
   if (!names) return backends;
-  return names.map((n) => backends.find((b) => b.name === n)).filter(Boolean);
+  // um nome na cadeia vale para a ponte e para todas as suas réplicas (campo "group"), na ordem em que estão em BACKENDS
+  return [...new Set(names.flatMap((n) => backends.filter((b) => b.name === n || b.group === n)))];
+}
+// Réplicas do mesmo grupo: a menos ocupada primeiro; entre iguais, a que já está ligada (evita esperar a subida do container).
+const running = new Set();
+setInterval(async () => { const out = await docker("ps", "--format", "{{.Names}}"); if (out) { running.clear(); out.split("\n").forEach((n) => running.add(n)); } }, 10000).unref();
+export function orderChain(chain, load = () => 0, isUp = () => true, cooling = () => false) {
+  const seen = [];
+  const rank = new Map();
+  chain.forEach((b) => { const g = b.group || b.name; if (!rank.has(g)) rank.set(g, rank.size); });
+  const sorted = [...chain].sort((a, b) => (rank.get(a.group || a.name) - rank.get(b.group || b.name)) || (load(a) - load(b)) || (Number(isUp(b)) - Number(isUp(a))) || (chain.indexOf(a) - chain.indexOf(b)));
+  // as que estão em pausa por falha recente ficam por último (só entram se as demais não resolverem)
+  return [...sorted.filter((b) => !cooling(b)), ...sorted.filter((b) => cooling(b))];
 }
 const COOLDOWN_MS = Number(process.env.GATEWAY_COOLDOWN_MS || 60000);
 const downUntil = new Map();
@@ -60,11 +72,13 @@ const startedByUs = new Set();
 const lastUse = new Map();
 const inflight = new Map();
 const starting = new Map();
+const startedAt = new Map();
 const docker = (...args) => new Promise((resolve) => execFile("docker", args, { timeout: 60000 }, (e, out) => resolve(e ? "" : String(out).trim())));
-export const isWarming = (msg) => /reconect|carregando|n[aã]o ficou pronta|indispon[ií]vel|ainda n[aã]o/i.test(msg || "");
+export const isWarming = (msg, code = "") => /reconnecting|browser_/i.test(code) || /reconect|carregando|n[aã]o ficou pronta|indispon[ií]vel|ainda n[aã]o/i.test(msg || "");
 async function ensureUp(b) {
   if (!b.container) return;
   lastUse.set(b.name, Date.now());
+  if (starting.has(b.name)) { await starting.get(b.name); return; }
   if ((await docker("inspect", "-f", "{{.State.Running}}", b.container)) === "true") return;
   if (!starting.has(b.name)) {
     starting.set(b.name, (async () => {
@@ -77,6 +91,7 @@ async function ensureUp(b) {
         await new Promise((r2) => setTimeout(r2, 2000));
       }
       await new Promise((r2) => setTimeout(r2, WARM_MS)); // o navegador da ponte ainda precisa abrir a página
+      startedAt.set(b.name, Date.now());
     })().finally(() => starting.delete(b.name)));
   }
   await starting.get(b.name);
@@ -253,15 +268,19 @@ async function handleMessages(req, res) {
     let message, last;
     const now = Date.now();
     const chain = chainFor(body.model, BACKENDS, ROUTES, demandOf(body));
-    const ready = chain.filter((b) => (downUntil.get(b.name) || 0) <= now);
-    for (const b of ready.length ? ready : chain) {
+    const order = orderChain(chain, (x) => inflight.get(x.name) || 0, (x) => !x.container || running.has(x.container), (x) => (downUntil.get(x.name) || 0) > now);
+    let sizeErr;
+    for (const [i, b] of order.entries()) {
+      // cada ponte tem uma aba só: se já há pedidos demais nela e ainda há outra opção, passa para a próxima
+      if ((inflight.get(b.name) || 0) >= (b.concurrency ?? 1) && order.slice(i + 1).some((o) => (inflight.get(o.name) || 0) < (o.concurrency ?? 1))) continue;
       // deixa ~40k para a conversa; mínimo de 20k para sistema + ferramentas
       const payload = toOpenAI(body, Math.min(BUDGET, Math.max(20000, b.maxChars - 40000)), b.model);
       const size = JSON.stringify(payload).length;
-      if (size > b.maxChars) { last = new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
+      if (size > b.maxChars) { sizeErr = sizeErr || new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
       console.log(`[${new Date().toISOString()}] /v1/messages -> ${b.name}: ${size} chars, ${payload.tools?.length || 0} ferramentas`);
       try {
         inflight.set(b.name, (inflight.get(b.name) || 0) + 1);
+        const t0 = Date.now();
         await ensureUp(b);
         let up, data;
         for (let attempt = 0; ; attempt++) {
@@ -272,20 +291,22 @@ async function handleMessages(req, res) {
           });
           data = await up.json().catch(() => ({}));
           // ponte recém-ligada ainda abrindo o navegador: espera e repete na mesma ponte
-          if (up.status === 503 && attempt < 6 && isWarming(data?.error?.message)) { await new Promise((r2) => setTimeout(r2, 8000)); continue; }
+          if (up.status === 503 && attempt < 8 && (isWarming(data?.error?.message, data?.error?.code) || Date.now() - (startedAt.get(b.name) || 0) < 90000)) { await new Promise((r2) => setTimeout(r2, 8000)); continue; }
           break;
         }
         if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
         message = fromOpenAI(data, model);
+        console.log(`[${new Date().toISOString()}] ok ${b.name} em ${Math.round((Date.now() - t0) / 1000)}s`);
         break;
       } catch (e) {
         if (abort.signal.aborted) throw e; // cliente saiu ou estourou o tempo total
         console.log(`[${new Date().toISOString()}] ${b.name} falhou: ${e.message.slice(0, 120)}`);
-        downUntil.set(b.name, Date.now() + COOLDOWN_MS);
+        // ponte fora do ar (reinício/queda): pausa curta; falha da página/site: pausa longa
+        downUntil.set(b.name, Date.now() + (/fetch failed|ECONNREFUSED|socket hang up/i.test(`${e.message} ${e.cause?.code || ""}`) ? 5000 : COOLDOWN_MS));
         last = e;
       } finally { inflight.set(b.name, Math.max(0, (inflight.get(b.name) || 1) - 1)); lastUse.set(b.name, Date.now()); }
     }
-    if (!message) throw last || new Error("nenhuma ponte disponível");
+    if (!message) throw last || sizeErr || new Error("nenhuma ponte disponível");
     if (stream) streamMessage(res, message); else json(res, 200, message);
   } catch (e) {
     const status = e.name === "AbortError" ? 504 : (e.status >= 400 && e.status < 600 ? e.status : 502);

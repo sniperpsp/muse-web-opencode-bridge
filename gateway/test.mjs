@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -46,5 +46,10 @@ assert.deepEqual(chainFor("x", bk, tiers, 100).map((b) => b.name), ["muse", "cha
 assert.deepEqual(chainFor("x", bk, tiers, 6000).map((b) => b.name), ["muse", "chatgpt"]);
 assert.deepEqual(chainFor("x", bk, tiers, 6001).map((b) => b.name), ["deepseek", "muse"]);
 assert.ok(demandOf({ messages: [{ role: "user", content: "oi" }] }) > 0);
-assert.ok(isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
+const pool = [{ name: "ds", group: "deepseek" }, { name: "ds2", group: "deepseek" }, { name: "ds3", group: "deepseek" }, { name: "muse" }];
+const ld = { ds: 1, ds2: 0, ds3: 0, muse: 0 };
+assert.deepEqual(chainFor("x", pool, { tiers: [{ chain: ["deepseek", "muse"] }] }).map((b) => b.name), ["ds", "ds2", "ds3", "muse"]);
+assert.deepEqual(orderChain(pool, (b) => ld[b.name], (b) => b.name !== "ds2").map((b) => b.name), ["ds3", "ds2", "ds", "muse"]);
+assert.deepEqual(orderChain(pool, () => 0, () => true, (b) => b.name === "ds").map((b) => b.name), ["ds2", "ds3", "muse", "ds"]);
+assert.ok(isWarming("", "muse_browser_reconnecting") && isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
 console.log("ok");

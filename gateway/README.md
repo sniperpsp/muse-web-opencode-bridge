@@ -56,3 +56,11 @@ A demanda é o tamanho da conversa em chars (sem sistema/ferramentas). Conversa 
 O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um único modelo ("GT Auto"). Se uma ponte falhar (cota, captcha, erro),
 cai para a próxima da cadeia, que sempre termina nas pontes grandes. Dentro de uma sessão a conversa só cresce: ela sobe de faixa e não volta.
 Os scripts do usuário (`gt-gateway`, `gt-claude`, `gt-opencode`) ficam em `~/.local/bin`; as pontes pequenas ficam em `~/.config/gateway/bridges.json`.
+
+## Réplicas e distribuição de carga
+
+Um backend pode ter réplicas: entradas com `"group": "<nome do backend original>"` (cópias do container com o volume clonado, logadas igual; ex.: `deepseek-opencode-bridge-2`, portas 4437/4537).
+Na cadeia, o nome do grupo vale para a ponte e todas as réplicas. Cada demanda vai para **uma** ponte: a menos ocupada do grupo (`inflight`), preferindo a que já está ligada;
+`concurrency` (padrão 1) limita pedidos simultâneos por ponte (o Muse tem 2 abas, então 2). Se todas do grupo estão cheias, passa para o próximo grupo da cadeia.
+Pontes em pausa por falha recente vão para o fim da fila (não são descartadas), e queda de conexão (reinício) pausa só 5 s. Se nada comporta o prompt, o erro devolvido é o da última ponte tentada, não o de tamanho.
+Réplicas atuais: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–1,8 GB), Gemini ×1, Muse 1 container com 2 abas.

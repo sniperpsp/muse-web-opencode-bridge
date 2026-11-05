@@ -10,7 +10,7 @@ export function stampMessages([unitSelector, idAttr]) {
   document.querySelectorAll(unitSelector).forEach((el, i) => el.setAttribute(idAttr, `m${i}:${el.tagName === "USER-QUERY" ? "user" : "assistant"}`));
 }
 export function messageRole(id) {
-  return id.endsWith(":user") ? "user" : "assistant";
+  return (id || "").endsWith(":user") ? "user" : "assistant";
 }
 
 // Texto da resposta do assistente dentro da mensagem.
