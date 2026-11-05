@@ -407,6 +407,7 @@ async function openMuseBrowser() {
     });
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
+    if (SITE.PAGE_CSS) await context.addInitScript((css) => { const add = () => { const st = document.createElement("style"); st.textContent = css; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }, SITE.PAGE_CSS).catch(() => {});
     const museOrigin = new URL(MUSE_URL).origin;
     musePage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
@@ -424,6 +425,7 @@ async function openMuseBrowser() {
     });
     watchPrimaryBrowser(browser);
     context = browser.contexts()[0] || await browser.newContext();
+    if (SITE.PAGE_CSS) await context.addInitScript((css) => { const add = () => { const st = document.createElement("style"); st.textContent = css; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }, SITE.PAGE_CSS).catch(() => {});
     const museOrigin = new URL(MUSE_URL).origin;
     musePage = context.pages().find((page) => {
       try { return new URL(page.url()).origin === museOrigin; }
@@ -458,6 +460,7 @@ async function openMuseBrowser() {
     watchPrimaryBrowser(browser);
     const state = await readSavedSession();
     context = await browser.newContext(state ? { storageState: state } : {});
+    if (SITE.PAGE_CSS) await context.addInitScript((css) => { const add = () => { const st = document.createElement("style"); st.textContent = css; (document.head || document.documentElement).appendChild(st); }; if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add); else add(); }, SITE.PAGE_CSS).catch(() => {});
     musePage = await context.newPage();
     await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
   }
