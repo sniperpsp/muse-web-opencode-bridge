@@ -1,0 +1,25 @@
+# Uma ponte por provedor: mesma imagem, PROVIDER muda. Uso: PROVIDER=qwen PORT_API=4341 PORT_VNC=4342 docker compose -p bridge-qwen up -d
+name: bridge-${PROVIDER:-deepseek}
+services:
+  bridge:
+    build: .
+    image: universal-bridge:local
+    container_name: bridge-${PROVIDER:-deepseek}
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    mem_limit: ${MEM_LIMIT:-1500m}
+    environment:
+      PROVIDER: ${PROVIDER:-deepseek}
+      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-100000}
+      MUSE_ROTATE_CHARS: ${MUSE_ROTATE_CHARS:-150000}
+      MUSE_VNC_URL: http://127.0.0.1:${PORT_VNC:-4338}/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=${PORT_VNC:-4338}&path=websockify
+      MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-420000}
+    ports:
+      - "127.0.0.1:${PORT_API:-4337}:4317"
+      - "127.0.0.1:${PORT_VNC:-4338}:7900"
+    volumes:
+      - data:/data
+volumes:
+  data:
+    name: bridge-${PROVIDER:-deepseek}-data

@@ -1,10 +1,13 @@
 # Mede quanto cada ponte aguenta: manda texto de N mil caracteres com 3 códigos (início, meio, fim) e confere se o modelo os leu.
 # Uso: python3 gateway/medir-limite.py <provedor do opencode.jsonc> <tamanhos em mil chars...>   ex.: deepseek 100 300 500
 import re,json,os,time,random,urllib.request,sys
-t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
 prov=sys.argv[1]
-cfg=json.loads(t)['provider'][prov]
-key=cfg['options']['apiKey'];base=cfg['options']['baseURL'];model=list(cfg['models'])[0]
+if os.environ.get('BASE'):  # ponte fora do opencode.jsonc: BASE=http://127.0.0.1:4361/v1 KEY=... MODEL=qwen-web
+    key=os.environ['KEY'];base=os.environ['BASE'];model=os.environ['MODEL']
+else:
+    t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
+    cfg=json.loads(t)['provider'][prov]
+    key=cfg['options']['apiKey'];base=cfg['options']['baseURL'];model=list(cfg['models'])[0]
 random.seed(7)
 words="rio monte vento chave porta livro nuvem ponte campo pedra sol lua mar fogo terra".split()
 def filler(n):
