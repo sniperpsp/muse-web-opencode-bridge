@@ -1,3 +1,4 @@
+name: deepseek-opencode-bridge
 services:
   deepseek-bridge:
     build:

@@ -1,3 +1,4 @@
+name: chatgpt-opencode-bridge
 services:
   chatgpt-bridge:
     build:

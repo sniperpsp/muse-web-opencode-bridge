@@ -1,3 +1,4 @@
+name: gemini-opencode-bridge
 services:
   gemini-bridge:
     build:
