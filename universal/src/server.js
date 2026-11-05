@@ -14,6 +14,7 @@ import { withBrowserOperationTimeout } from "./browser-operation.js";
 const PROVIDER = (process.env.PROVIDER || "deepseek").replace(/[^a-z0-9_-]/gi, "");
 const SITE = await import(`./sites/${PROVIDER}.js`);
 const MODEL_ID = `${PROVIDER}-web`;
+const isConversationUrl = (url) => SITE.CONVERSATION_PATH_RE.test(url.pathname) || SITE.CONVERSATION_PATH_RE.test(url.pathname + url.search);
 const {
   ASSISTANT_TEXT_SELECTOR, COMPOSER_SELECTOR, CONVERSATION_PATH_RE, GENERIC_COMPOSER_SELECTOR, LOGGED_OUT_BUTTON_NAME_RE,
   LOGIN_BUTTON_TEXT_RE, LOGIN_FIELDS_SELECTOR, SEND_SELECTOR, stampMessages, MEDIA_SELECTOR, LOGIN_SCREEN_TEXT_RE, MESSAGE_ID_ATTR, MESSAGE_UNIT_SELECTOR, SEND_BUTTON_NAME_RE,
@@ -314,7 +315,7 @@ async function selectConversation(sessionId, signal) {
 
 async function rememberThread() {
   const url = new URL(musePage.url());
-  if (url.origin === new URL(MUSE_URL).origin && CONVERSATION_PATH_RE.test(url.pathname) && conversation.url !== url.href) {
+  if (url.origin === new URL(MUSE_URL).origin && isConversationUrl(url) && conversation.url !== url.href) {
     conversation.url = url.href;
     await saveConversations();
   }
@@ -687,7 +688,7 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
         throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio da IA. Configure MUSE_SEND_SELECTOR para o botão desta página.");
       }
     }
-    await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH_RE.test(url.pathname), { timeout: 15000 }), signal, "Confirmar o envio à IA");
+    await museBrowserOperation(() => musePage.waitForURL((url) => isConversationUrl(url), { timeout: 15000 }), signal, "Confirmar o envio à IA");
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
