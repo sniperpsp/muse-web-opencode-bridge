@@ -108,15 +108,25 @@ PROVIDER=qwen PORT_API=4361 PORT_VNC=4362 docker compose -p bridge-qwen up -d
 
 O Copilot não funciona: a Microsoft bloqueia o login no Chromium automatizado. Para um site novo, copie um adaptador (por exemplo `qwen.js`) e ajuste os seletores com o site logado. O contrato são os exports que `universal/src/server.js` usa: `DEFAULT_URL`, `MESSAGE_UNIT_SELECTOR`, `ASSISTANT_TEXT_SELECTOR`, `STREAMING_SELECTOR`, `COMPOSER_SELECTOR`, `SEND_SELECTOR`, `CONVERSATION_PATH_RE` e as funções `stampMessages`, `messageRole`, `isAssistantMessageId`. Opcionais: `PAGE_CSS` (esconde elementos por CSS) e `LIMIT_TEXT_RE` (texto de cota/fila do site, vira 429 `provider_quota`).
 
-## Instalação do zero (resumo)
+## Instalação
 
-1. **Clone** o repositório e tenha Docker (com Compose) e Node 18+. Para o `gt-claude`, o Claude Code; para o `gt-opencode`, o OpenCode.
-2. **Suba as pontes** que quiser usar (`cd deepseek && docker compose up -d --build`, e o mesmo para `muse`, `chatgpt`, `gemini`), faça o login de cada uma no noVNC e registre cada provedor no `~/.config/opencode/opencode.jsonc` com a chave da ponte (seção acima). O `gt-gateway` lê os provedores `deepseek`, `muse`, `chatgpt` e `gemini` desse arquivo.
-3. **Instale os comandos:** `cp gateway/scripts/gt-* ~/.local/bin/`. Se o repositório não estiver em `/mnt/e/muse-opencode-bridge`, exporte `GT_REPO=<caminho do clone>` (no `~/.bashrc`).
-4. **Para o OpenCode**, acrescente ao `provider` o trecho de `gateway/scripts/opencode-provider.example.jsonc`.
-5. **Rode** `gt-claude` ou `gt-opencode`. Na primeira vez eles criam a chave do gateway e sobem o gateway sozinhos.
+**Pelo seu agente de IA (o jeito mais simples).** Abra o Claude Code, o OpenCode ou outro agente no clone do repositório e peça:
 
-Opcional: réplicas (`python3 gateway/scripts/replicar.py deepseek 4437 4438 2`, para atender mais de um pedido ao mesmo tempo) e pontes extras (`universal/` e `~/.config/gateway/bridges.json`, [exemplo](gateway/scripts/bridges.example.json)). Sem eles, o gateway usa só as pontes principais.
+> Instale este projeto seguindo o INSTALAR.md.
+
+O agente pergunta quais sites você quer, sobe as pontes, abre uma janela de login por site (você entra na sua conta) e registra tudo no OpenCode. Ele não precisa da sua senha. O roteiro dele está em [`INSTALAR.md`](INSTALAR.md).
+
+**Você mesmo, com um comando.** Precisa de Docker com Compose, Python 3 e, para o gateway, Node 18+:
+
+```bash
+git clone https://github.com/sniperpsp/muse-web-opencode-bridge.git && cd muse-web-opencode-bridge
+python3 instalar.py                          # pergunta o que instalar
+python3 instalar.py --pontes deepseek,muse   # ou escolha direto (--todas, --sem-gateway, --sem-abrir)
+```
+
+O instalador sobe as pontes, abre a janela de login de cada site, espera você entrar, lê as chaves, testa com um "pong", registra os provedores no `~/.config/opencode/opencode.jsonc` (com backup) e instala `gt-claude` e `gt-opencode`. Pode ser rodado de novo: o que já está pronto é pulado.
+
+**À mão**, passo a passo: as seções "Subir uma ponte" acima e "Gateway" abaixo.
 
 ## Gateway (OpenCode e Claude Code sobre as pontes)
 
@@ -147,6 +157,8 @@ O gateway escolhe a ponte pelo tamanho da conversa, distribui a carga entre rép
 ## Estrutura
 
 ```
+instalar.py instalador (sobe as pontes, abre o login, registra no OpenCode)
+INSTALAR.md roteiro para um agente de IA instalar o projeto
 muse/       ponte do Muse AI (instalador Windows/WSL, docs, testes)
 chatgpt/    ponte do ChatGPT (chatgpt.com)
 deepseek/   ponte do DeepSeek (chat.deepseek.com)
