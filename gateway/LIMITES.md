@@ -24,6 +24,9 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 | | | 100k | **falhou** (respondeu "Deixa eu verificar a conversa anterior…") | 72 s | |
 | | | depois de ~8 chamadas | **cota**: pop-up "Too many people are chatting"; nem "pong" passa. A ponte devolve 429 `provider_quota` | 7 s | |
 
+| **Z.ai** | zai-web | 30k | leu os 3 | 23 s | 30k–100k (não medido entre) |
+| | | 100k, 250k | **parcial**: lê início e fim, **perde o meio** (contexto truncado) | 28–99 s | |
+
 ## Conclusões
 
 - **DeepSeek**: o mais rápido e o que mais aguenta. Confiável até **~475k** caracteres; 500k é limítrofe; de 600k em diante falha. Acima de ~600k o gargalo é a própria ponte (colar no campo, `browser-operation` de 15 s), não só o site.
@@ -36,6 +39,7 @@ Por isso o tamanho útil de conversa é bem menor que o limite bruto.
 
 - **Qwen** (ponte `universal`, `PROVIDER=qwen`): confiável até **70k**; de 100k em diante o site abre o code interpreter e devolve lixo. Serve para subagentes pequenos.
 - **Kimi** (`PROVIDER=kimi`): leu 30k, falhou em 100k. A conta gratuita **esgota rápido**: depois de ~8 chamadas (algumas grandes) o site passou a mostrar "Too many people are chatting" e recusa tudo. A ponte detecta o pop-up e devolve **429 `provider_quota`** (o gateway deve tratar como cota esgotada e usar outra ponte).
+- **Z.ai** (`PROVIDER=zai`): leu 30k; a partir de 100k **perde o miolo do texto** sem avisar (pior que falhar, pois a resposta parece válida). Usar só até ~30k.
 - Pontes novas usam a imagem única `universal/` (um container por provedor, adaptador em `universal/src/sites/<provedor>.js`).
 
 ## Regra de roteamento adotada
