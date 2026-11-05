@@ -65,6 +65,7 @@ let museAuthenticated = false;
 let conversations = new Map();
 let conversation = {};
 let activeSessionId = "";
+let activeCancel; // cancela a chamada ativa pelo painel (Limpar pendentes)
 let activeRequestHash = "";
 const queue = createRequestQueue();
 const controlToken = randomBytes(32).toString("hex");
@@ -1158,7 +1159,9 @@ async function handleCompletion(req, res) {
     const completion = await queue.run(async (queueWaitMs) => {
       executionDeadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       // Once active, finish and cache the same request even if OpenCode drops its HTTP connection.
-      signal = executionDeadline;
+      const manualCancel = new AbortController();
+      activeCancel = manualCancel;
+      signal = AbortSignal.any([executionDeadline, manualCancel.signal]);
       signal.throwIfAborted();
       activeRequestHash = requestHash;
       activeSessionId = sessionId;
@@ -1249,6 +1252,7 @@ async function handleCompletion(req, res) {
       } finally {
         activeRequestHash = "";
         activeSessionId = "";
+        activeCancel = undefined;
       }
     }, { sessionId, signal: disconnected.signal });
     if (res.destroyed || res.writableEnded) return;
@@ -1354,6 +1358,15 @@ async function handleControl(req, res, url) {
     catch { return sendJson(res, 400, { error: "Requisição inválida." }); }
     if (action !== "clear" && action !== "resend") return sendJson(res, 400, { error: "Ação desconhecida." });
     const released = [];
+    // Limpar também derruba a chamada que está executando agora (antes ela era ignorada e se renovava a cada 7 min, deixando a sessão presa).
+    if (action === "clear" && activeSessionId && activeCancel) {
+      const stuck = activeSessionId;
+      activeCancel.abort(new Error("Cancelada pelo painel (Limpar pendentes)."));
+      console.warn(JSON.stringify({ event: "muse_submission", phase: "manual_cancel_active", session: stuck.slice(-8) }));
+      for (let i = 0; i < 20 && activeSessionId === stuck; i++) await sleep(250);
+      const saved = conversations.get(stuck);
+      if (saved) { saved.pendingSubmission = undefined; delete saved.pendingBody; Object.assign(saved, { url: undefined, previousMessages: [], threadChars: 0, baseChars: 0, turns: 0, sinceFull: 0, toolsKey: undefined }); released.push({ sessionId: stuck }); }
+    }
     for (const [sessionId, saved] of conversations) {
       if (!saved.pendingSubmission || sessionId === activeSessionId) continue;
       const body = saved.pendingBody;
