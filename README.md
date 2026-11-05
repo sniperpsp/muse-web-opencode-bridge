@@ -108,6 +108,16 @@ PROVIDER=qwen PORT_API=4361 PORT_VNC=4362 docker compose -p bridge-qwen up -d
 
 O Copilot não funciona: a Microsoft bloqueia o login no Chromium automatizado. Para um site novo, copie um adaptador (por exemplo `qwen.js`) e ajuste os seletores com o site logado. O contrato são os exports que `universal/src/server.js` usa: `DEFAULT_URL`, `MESSAGE_UNIT_SELECTOR`, `ASSISTANT_TEXT_SELECTOR`, `STREAMING_SELECTOR`, `COMPOSER_SELECTOR`, `SEND_SELECTOR`, `CONVERSATION_PATH_RE` e as funções `stampMessages`, `messageRole`, `isAssistantMessageId`. Opcionais: `PAGE_CSS` (esconde elementos por CSS) e `LIMIT_TEXT_RE` (texto de cota/fila do site, vira 429 `provider_quota`).
 
+## Instalação do zero (resumo)
+
+1. **Clone** o repositório e tenha Docker (com Compose) e Node 18+. Para o `gt-claude`, o Claude Code; para o `gt-opencode`, o OpenCode.
+2. **Suba as pontes** que quiser usar (`cd deepseek && docker compose up -d --build`, e o mesmo para `muse`, `chatgpt`, `gemini`), faça o login de cada uma no noVNC e registre cada provedor no `~/.config/opencode/opencode.jsonc` com a chave da ponte (seção acima). O `gt-gateway` lê os provedores `deepseek`, `muse`, `chatgpt` e `gemini` desse arquivo.
+3. **Instale os comandos:** `cp gateway/scripts/gt-* ~/.local/bin/`. Se o repositório não estiver em `/mnt/e/muse-opencode-bridge`, exporte `GT_REPO=<caminho do clone>` (no `~/.bashrc`).
+4. **Para o OpenCode**, acrescente ao `provider` o trecho de `gateway/scripts/opencode-provider.example.jsonc`.
+5. **Rode** `gt-claude` ou `gt-opencode`. Na primeira vez eles criam a chave do gateway e sobem o gateway sozinhos.
+
+Opcional: réplicas (`python3 gateway/scripts/replicar.py deepseek 4437 4438 2`, para atender mais de um pedido ao mesmo tempo) e pontes extras (`universal/` e `~/.config/gateway/bridges.json`, [exemplo](gateway/scripts/bridges.example.json)). Sem eles, o gateway usa só as pontes principais.
+
 ## Gateway (OpenCode e Claude Code sobre as pontes)
 
 ```bash

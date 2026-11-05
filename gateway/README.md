@@ -16,14 +16,13 @@ Sem dependências. Node 18+. Estado: usado em sessões reais do OpenCode e do Cl
 Os scripts de [`scripts/`](scripts) sobem o gateway com as pontes certas. Copie-os para o PATH e ajuste os caminhos se o repositório não estiver em `/mnt/e/muse-opencode-bridge` (variável `GT_REPO`):
 
 ```bash
-cp gateway/scripts/gt-* ~/.local/bin/
-mkdir -p ~/.config/gateway && openssl rand -hex 24 > ~/.config/gateway/key   # chave do gateway (guarde fora do repositório)
+cp gateway/scripts/gt-* ~/.local/bin/    # garanta que ~/.local/bin está no PATH
 
 gt-claude      # Claude Code pelo gateway (sobe o gateway se preciso)
 gt-opencode    # OpenCode pelo gateway, modelo gateway/gt-auto
 ```
 
-- `gt-gateway` lê as pontes principais do seu `~/.config/opencode/opencode.jsonc` (provedores `deepseek`, `muse`, `chatgpt`, `gemini`) e as extras de `~/.config/gateway/bridges.json` ([exemplo](scripts/bridges.example.json)). O log fica em `~/.config/gateway/gateway.log`.
+- `gt-gateway` lê as pontes principais do seu `~/.config/opencode/opencode.jsonc` (provedores `deepseek`, `muse`, `chatgpt`, `gemini`) e as extras de `~/.config/gateway/bridges.json` ([exemplo](scripts/bridges.example.json)). Réplicas só entram se o container existir. Na primeira execução ele cria a chave do gateway (`~/.config/gateway/key`) e o `gt-claude` cria o `settings.json`. O log fica em `~/.config/gateway/gateway.log`.
 - Para o OpenCode, acrescente o provedor de [`scripts/opencode-provider.example.jsonc`](scripts/opencode-provider.example.jsonc). A chave vem de `~/.config/gateway/key` por `{file:...}`, sem ir para o arquivo.
 - Para o Claude Code, `~/.config/gateway/settings.json` usa `apiKeyHelper` (`cat ~/.config/gateway/key`) e `ANTHROPIC_BASE_URL=http://127.0.0.1:4350`.
 

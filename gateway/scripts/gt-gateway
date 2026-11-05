@@ -3,9 +3,11 @@
 # Sobe o gateway (porta 4350) se ainda não estiver de pé. Usado por gt-claude e gt-opencode.
 GW_DIR="${GT_REPO:-/mnt/e/muse-opencode-bridge}/gateway"
 CFG=~/.config/gateway
+mkdir -p $CFG
+[ -s $CFG/key ] || { umask 077; openssl rand -hex 24 > $CFG/key; echo "chave do gateway criada em $CFG/key" >&2; }
 if ! curl -fs -m 2 http://127.0.0.1:4350/health >/dev/null; then
   BACKENDS=$(python3 - <<'PY'
-import re,json,os
+import re,json,os,subprocess
 t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
 prov=json.loads(t)['provider']
 # (provedor, limite de caracteres aceito pela ponte)
@@ -21,6 +23,7 @@ for n,mx,ct in order:
     base={'name':n,'url':p['options']['baseURL'],'key':p['options']['apiKey'],'model':list(p['models'])[0],'maxChars':mx,'container':ct,'concurrency':CONC.get(n,1)}
     out.append(base)
     for k,port in REPL.get(n,[]):
+        if subprocess.run(['docker','inspect',f'{ct}-{k}'],capture_output=True).returncode: continue   # réplica não criada: ignora
         out.append({**base,'name':f'{n}-{k}','group':n,'url':re.sub(r':\d+/',f':{port}/',base['url']),'container':f'{ct}-{k}'})
 print(json.dumps(out))
 PY
