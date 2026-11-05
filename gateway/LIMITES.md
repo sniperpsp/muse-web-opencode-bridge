@@ -34,6 +34,10 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 | | | 90k | **leu os 3** (12 s), depois que o captcha foi resolvido | 12 s | 90k+ |
 | | | 95k (antes do captcha) | travou: o site pediu captcha; sem resolver, ficou "Processing" para sempre | >240 s | |
 
+| **Duck.ai** | duck-web | 6k / 10k | leu os 3 | 5 s | 10k |
+| | | 12k | perdeu o código do meio | 6 s | |
+| | | 30k, 100k | **recusado pelo site**: campo de mensagem limitado a **16.000 caracteres** ("Please try a shorter message") | 18 s | |
+
 ## Conclusões
 
 - **DeepSeek**: o mais rápido e o que mais aguenta. Confiável até **~475k** caracteres; 500k é limítrofe; de 600k em diante falha. Acima de ~600k o gargalo é a própria ponte (colar no campo, `browser-operation` de 15 s), não só o site.
@@ -50,6 +54,7 @@ Por isso o tamanho útil de conversa é bem menor que o limite bruto.
 - **Mistral** (`PROVIDER=mistral`): rápido (16 s), confiável até **60k**; em 100k o Le Chat corta o miolo da colagem e avisa. Bom para subagentes.
 - **MiniMax** (`PROVIDER=minimax`, agent.minimax.io): rápido (6 s com 30k, 12 s com 90k). O travamento em ~95k era **captcha** não resolvido, não limite de tamanho; com captcha resolvido leu 90k. **É um agente**: com texto grande ele corta a colagem e roda comandos/edita arquivos para reconstruir, o que **gasta muitos créditos** (aviso "Fewer than 1,000 Credits remain" após os testes). Cota diária é em **créditos** (400/dia segundo o usuário), não 1 por chamada; chamada pequena custa pouco, grande custa muito. 200k não confirmou (envio sem endereço em 15 s). Não rodar testes grandes automáticos.
 - **Copilot**: **fora da rota (2026-11-05).** A Microsoft bloqueia o login no Chromium automatizado do container ("Let's solve this together") e sem login só há a tela "Sign into Copilot". Alternativa não implementada: atachar o Chrome do Windows já logado via `MUSE_CDP_ENDPOINT`.
+- **Duck.ai** (`PROVIDER=duck`, **sem login**; no 1º uso clicar "Continue" nos termos): o site limita a mensagem a **16.000 caracteres**; seguro até **~10k** (5 s). Só serve para subagentes minúsculos. Container sobe com `MUSE_MAX_PROMPT_CHARS=15000`. A conversa continua na mesma página (a URL não muda).
 - Pontes novas usam a imagem única `universal/` (um container por provedor, adaptador em `universal/src/sites/<provedor>.js`).
 
 ## Regra de roteamento adotada
