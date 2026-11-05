@@ -92,10 +92,21 @@ bash instalar.sh
 ## Estrutura
 
 ```
-muse/       ponte do Muse (instalador, docs, testes)
-chatgpt/    ponte do ChatGPT
-deepseek/   ponte do DeepSeek
-gemini/     ponte do Gemini
+muse/       ponte do Muse AI (instalador Windows/WSL, docs, testes)
+chatgpt/    ponte do ChatGPT (chatgpt.com)
+deepseek/   ponte do DeepSeek (chat.deepseek.com)
+gemini/     ponte do Gemini (gemini.google.com)
+gateway/    gateway Anthropic: deixa o Claude Code falar com qualquer ponte acima
 ```
 
-Cada pasta é independente: tem `Dockerfile`, `docker-compose.yml`, `src/` e testes (`npm ci && npm test`).
+- **As 4 pontes** (`muse`, `chatgpt`, `deepseek`, `gemini`): cada uma sobe um Chromium em Docker, mantém o seu login no site e expõe uma API compatível com OpenAI (`/v1/chat/completions`). São independentes: cada pasta tem `Dockerfile`, `docker-compose.yml`, `src/` e testes (`npm ci && npm test`).
+- **`gateway/`**: serviço pequeno, sem dependências, que expõe `POST /v1/messages` (formato da API da Anthropic, com `tool_use`) e traduz para o `/v1/chat/completions` de uma ponte (padrão: DeepSeek). Com ele, `ANTHROPIC_BASE_URL=http://127.0.0.1:4350 claude` usa o chat do DeepSeek por trás. É um protótipo: veja os limites e as variáveis em [`gateway/README.md`](gateway/README.md).
+
+## Gateway (Claude Code sobre as pontes)
+
+```bash
+UPSTREAM_KEY=<chave da ponte> GATEWAY_KEY=<chave que você inventar> node gateway/server.js
+ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> claude
+```
+
+Qualquer nome de modelo é aceito e vai para o modelo da ponte. Testado com chat, chamada de ferramenta, streaming e o Claude Code lendo um arquivo.
