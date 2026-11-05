@@ -28,7 +28,21 @@ const LEVELS = [
   { sys: 8000, tool: 120, prop: 40, mcp: false },
   { sys: 6000, tool: 80, prop: 0, mcp: false, core: true },
 ];
-if (!UPSTREAM_KEY) { console.error("Defina UPSTREAM_KEY."); process.exit(1); }
+// BACKENDS (JSON): [{"name":"deepseek","url":"http://127.0.0.1:4337/v1","key":"...","model":"deepseek-web","maxChars":240000}, ...]
+// Tentados em ordem; pula quem não comporta o prompt ou falhou há pouco; troca para o próximo em caso de erro.
+const BACKENDS = process.env.BACKENDS ? JSON.parse(process.env.BACKENDS) : [{ name: "default", url: UPSTREAM_URL, key: UPSTREAM_KEY, model: UPSTREAM_MODEL, maxChars: 240000 }];
+// ROUTES (JSON): {"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}
+// A chave é um trecho do nome do modelo pedido (o Claude Code usa haiku nos subagentes leves); vence a primeira que casar.
+const ROUTES = process.env.ROUTES ? JSON.parse(process.env.ROUTES) : {};
+export function chainFor(model, backends = BACKENDS, routes = ROUTES) {
+  const key = Object.keys(routes).find((k) => k !== "default" && String(model).toLowerCase().includes(k.toLowerCase()));
+  const names = routes[key] || routes.default;
+  if (!names) return backends;
+  return names.map((n) => backends.find((b) => b.name === n)).filter(Boolean);
+}
+const COOLDOWN_MS = Number(process.env.GATEWAY_COOLDOWN_MS || 60000);
+const downUntil = new Map();
+if (!BACKENDS.length || BACKENDS.some((b) => !b.key)) { console.error("Defina UPSTREAM_KEY (ou BACKENDS com key em todos)."); process.exit(1); }
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 const text = (c) => typeof c === "string" ? c : (Array.isArray(c) ? c.map((b) => b?.type === "text" ? b.text : "").join("") : "");
@@ -58,21 +72,21 @@ function buildTools(tools, lv) {
 }
 
 // Escolhe o primeiro nível cujo (sistema + ferramentas) cabe no BUDGET; o último vale de qualquer jeito.
-function fitPrompt(body) {
+function fitPrompt(body, budget = BUDGET) {
   const system = text(body.system);
   let pick;
   for (const lv of LEVELS) {
     const tools = buildTools(body.tools || [], lv);
     pick = { system: clip(system, lv.sys), tools };
-    if (pick.system.length + JSON.stringify(tools).length <= BUDGET) break;
+    if (pick.system.length + JSON.stringify(tools).length <= budget) break;
   }
   return pick;
 }
 
 // ---- Anthropic -> OpenAI -------------------------------------------------
-export function toOpenAI(body) {
+export function toOpenAI(body, budget = BUDGET, model = UPSTREAM_MODEL) {
   const messages = [];
-  const { system, tools } = fitPrompt(body);
+  const { system, tools } = fitPrompt(body, budget);
   if (system) messages.push({ role: "system", content: system });
   for (const m of body.messages || []) {
     if (typeof m.content === "string") { messages.push({ role: m.role, content: m.content }); continue; }
@@ -97,7 +111,7 @@ export function toOpenAI(body) {
       flush();
     }
   }
-  const out = { model: UPSTREAM_MODEL, messages, stream: false };
+  const out = { model, messages, stream: false };
   if (body.max_tokens) out.max_tokens = body.max_tokens;
   if (body.temperature !== undefined) out.temperature = body.temperature;
   if (tools.length) {
@@ -188,16 +202,34 @@ async function handleMessages(req, res) {
     ping = setInterval(() => sse(res, "ping", {}), 10000);
   }
   try {
-    const payload = toOpenAI(body);
-    console.log(`[${new Date().toISOString()}] /v1/messages ${JSON.stringify(payload).length} chars, ${payload.tools?.length || 0} ferramentas`);
-    const up = await fetch(`${UPSTREAM_URL}/chat/completions`, {
-      method: "POST", signal: abort.signal,
-      headers: { "content-type": "application/json", authorization: `Bearer ${UPSTREAM_KEY}`, "x-opencode-session-id": sessionId(body) },
-      body: JSON.stringify(payload),
-    });
-    const data = await up.json().catch(() => ({}));
-    if (!up.ok) throw Object.assign(new Error(data?.error?.message || `ponte respondeu ${up.status}`), { status: up.status });
-    const message = fromOpenAI(data, model);
+    let message, last;
+    const now = Date.now();
+    const chain = chainFor(body.model);
+    const ready = chain.filter((b) => (downUntil.get(b.name) || 0) <= now);
+    for (const b of ready.length ? ready : chain) {
+      // deixa ~40k para a conversa; mínimo de 20k para sistema + ferramentas
+      const payload = toOpenAI(body, Math.min(BUDGET, Math.max(20000, b.maxChars - 40000)), b.model);
+      const size = JSON.stringify(payload).length;
+      if (size > b.maxChars) { last = new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
+      console.log(`[${new Date().toISOString()}] /v1/messages -> ${b.name}: ${size} chars, ${payload.tools?.length || 0} ferramentas`);
+      try {
+        const up = await fetch(`${b.url.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST", signal: abort.signal,
+          headers: { "content-type": "application/json", authorization: `Bearer ${b.key}`, "x-opencode-session-id": sessionId(body) },
+          body: JSON.stringify(payload),
+        });
+        const data = await up.json().catch(() => ({}));
+        if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
+        message = fromOpenAI(data, model);
+        break;
+      } catch (e) {
+        if (abort.signal.aborted) throw e; // cliente saiu ou estourou o tempo total
+        console.log(`[${new Date().toISOString()}] ${b.name} falhou: ${e.message.slice(0, 120)}`);
+        downUntil.set(b.name, Date.now() + COOLDOWN_MS);
+        last = e;
+      }
+    }
+    if (!message) throw last || new Error("nenhuma ponte disponível");
     if (stream) streamMessage(res, message); else json(res, 200, message);
   } catch (e) {
     const status = e.name === "AbortError" ? 504 : (e.status >= 400 && e.status < 600 ? e.status : 502);

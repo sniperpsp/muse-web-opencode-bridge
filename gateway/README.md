@@ -26,10 +26,13 @@ Qualquer nome de modelo é aceito e vai para `UPSTREAM_MODEL`.
 | `GATEWAY_KEY` | vazia | se definida, exige `x-api-key` ou `Authorization: Bearer` |
 | `GATEWAY_PORT` / `GATEWAY_HOST` | `4350` / `127.0.0.1` | onde escuta |
 | `GATEWAY_BUDGET` | 55000 | máximo de caracteres para prompt de sistema + ferramentas (a ponte limita ~100k no total). Se estourar, o gateway encurta descrições, depois tira as ferramentas `mcp__*`, depois mantém só as básicas |
+| `BACKENDS` | só `UPSTREAM_*` | JSON com várias pontes `[{name,url,key,model,maxChars}]`, em ordem |
+| `ROUTES` | vazio | JSON `{"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}`: ordem por nome de modelo pedido |
+| `GATEWAY_COOLDOWN_MS` | 60000 | pausa de uma ponte que falhou |
 | `GATEWAY_CORE_TOOLS` | Read,Write,Edit,Bash,Glob,Grep,… | ferramentas mantidas no último nível |
 | `GATEWAY_TIMEOUT_MS` | 450000 | tempo máximo por chamada |
 
-Teste da tradução: `node gateway/test.mjs`.
+Teste da tradução: `node gateway/test.mjs`. Limites medidos de cada ponte e a regra de roteamento: [`LIMITES.md`](LIMITES.md) (`medir-limite.py` refaz a medição).
 
 ## Limites conhecidos (protótipo)
 

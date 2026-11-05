@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -36,4 +36,9 @@ const big = toOpenAI({
 const size = big.messages[0].content.length + JSON.stringify(big.tools).length;
 assert.ok(size <= 60000, `prompt fixo com ${size} chars`);
 assert.deepEqual(big.tools.map((t) => t.function.name), ["Read", "Edit", "Bash"]);
+const bk = ["deepseek", "muse", "chatgpt"].map((name) => ({ name }));
+const routes = { haiku: ["chatgpt", "muse"], default: ["deepseek", "muse", "chatgpt"] };
+assert.deepEqual(chainFor("claude-haiku-5-5", bk, routes).map((b) => b.name), ["chatgpt", "muse"]);
+assert.deepEqual(chainFor("claude-sonnet-5-5", bk, routes).map((b) => b.name), ["deepseek", "muse", "chatgpt"]);
+assert.deepEqual(chainFor("qualquer", bk, {}).map((b) => b.name), ["deepseek", "muse", "chatgpt"]);
 console.log("ok");
