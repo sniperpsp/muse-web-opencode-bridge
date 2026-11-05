@@ -57,6 +57,12 @@ Por isso o tamanho útil de conversa é bem menor que o limite bruto.
 - **Duck.ai** (`PROVIDER=duck`, **sem login**; no 1º uso clicar "Continue" nos termos): o site limita a mensagem a **16.000 caracteres**; seguro até **~10k** (5 s). Só serve para subagentes minúsculos. Container sobe com `MUSE_MAX_PROMPT_CHARS=15000`. A conversa continua na mesma página (a URL não muda).
 - Pontes novas usam a imagem única `universal/` (um container por provedor, adaptador em `universal/src/sites/<provedor>.js`).
 
+## Rota oficial (decisão 2026-11-05)
+
+Só **DeepSeek, Muse e ChatGPT** entram na rota. MiniMax (90k) e Qwen (70k) ficam como reserva opcional de subagente, com container desligado;
+Kimi, Z.ai, Duck e Copilot ficam fora (contexto pequeno demais para o prompt fixo do Claude Code, cotas baixas ou login bloqueado).
+A base `universal/` e os adaptadores em `universal/src/sites/` continuam no repositório.
+
 ## Regra de roteamento adotada
 
 Os subagentes do Claude Code costumam pedir o modelo `haiku`; o agente principal pede `sonnet`/`opus`.
