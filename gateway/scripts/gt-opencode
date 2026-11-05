@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# OpenCode usando o gateway (provider "gateway" em ~/.config/opencode/opencode.jsonc). Sobe o gateway se preciso.
+gt-gateway || exit 1
+exec opencode --model gateway/gt-auto "$@"

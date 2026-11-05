@@ -1,0 +1,15 @@
+// Dentro de "provider" no ~/.config/opencode/opencode.jsonc. A chave do gateway fica em ~/.config/gateway/key (não no arquivo).
+"gateway": {
+  "npm": "@ai-sdk/anthropic",
+  "name": "GT Pontes Web",
+  "options": {
+    "baseURL": "http://127.0.0.1:4350/v1",
+    "apiKey": "{file:~/.config/gateway/key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    // context baixo de propósito: o OpenCode resume a sessão antes de o histórico passar do limite das pontes
+    "gt-auto": { "name": "GT Auto", "limit": { "context": 80000, "output": 16000 } }
+  }
+}

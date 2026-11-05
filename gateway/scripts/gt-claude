@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Claude Code usando o gateway (gateway/ deste repositório), que roteia entre as pontes
+# (DeepSeek -> Muse -> ChatGPT -> Gemini) e troca de ponte se uma falhar. Liga as pontes sob demanda (docker start) e desliga após 10 min parada. Log: ~/.config/gateway/gateway.log
+gt-gateway || exit 1
+CFG=~/.config/gateway
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4350
+exec claude --settings $CFG/settings.json --model claude-sonnet-5-5 "$@"

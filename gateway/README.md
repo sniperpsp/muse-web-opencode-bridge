@@ -1,87 +1,131 @@
-# Gateway Anthropic → ponte OpenAI
+# Gateway Anthropic → pontes
 
-Faz o Claude Code (e qualquer cliente da API da Anthropic) falar com as pontes deste repositório.
-Expõe `POST /v1/messages` (com streaming e `tool_use`), `/v1/messages/count_tokens` e `/v1/models`,
-e repassa para o `/v1/chat/completions` de uma ponte (padrão: DeepSeek, porta 4337).
+Faz o Claude Code, o OpenCode e qualquer cliente da API da Anthropic falarem com as pontes deste repositório.
+Expõe `POST /v1/messages` (com streaming e `tool_use`), `/v1/messages/count_tokens`, `/v1/models` e `/health`, e traduz para o
+`/v1/chat/completions` de uma ou mais pontes. Por cima da tradução ele faz o trabalho que as pontes não fazem:
 
-Sem dependências. Node 18+.
+- **escolhe a ponte** pelo tamanho da conversa e distribui a carga entre réplicas;
+- **liga e desliga** os containers sob demanda;
+- **cabe o prompt** no limite de cada ponte (enxuga ferramentas, compacta o histórico);
+- **confere a resposta** e conserta ou reenvia quando o modelo web devolve algo inválido.
 
-## Uso
+Sem dependências. Node 18+. Estado: usado em sessões reais do OpenCode e do Claude Code; os limites de cada ponte estão em [`LIMITES.md`](LIMITES.md).
+
+## Uso rápido
+
+Os scripts de [`scripts/`](scripts) sobem o gateway com as pontes certas. Copie-os para o PATH e ajuste os caminhos se o repositório não estiver em `/mnt/e/muse-opencode-bridge` (variável `GT_REPO`):
+
+```bash
+cp gateway/scripts/gt-* ~/.local/bin/
+mkdir -p ~/.config/gateway && openssl rand -hex 24 > ~/.config/gateway/key   # chave do gateway (guarde fora do repositório)
+
+gt-claude      # Claude Code pelo gateway (sobe o gateway se preciso)
+gt-opencode    # OpenCode pelo gateway, modelo gateway/gt-auto
+```
+
+- `gt-gateway` lê as pontes principais do seu `~/.config/opencode/opencode.jsonc` (provedores `deepseek`, `muse`, `chatgpt`, `gemini`) e as extras de `~/.config/gateway/bridges.json` ([exemplo](scripts/bridges.example.json)). O log fica em `~/.config/gateway/gateway.log`.
+- Para o OpenCode, acrescente o provedor de [`scripts/opencode-provider.example.jsonc`](scripts/opencode-provider.example.jsonc). A chave vem de `~/.config/gateway/key` por `{file:...}`, sem ir para o arquivo.
+- Para o Claude Code, `~/.config/gateway/settings.json` usa `apiKeyHelper` (`cat ~/.config/gateway/key`) e `ANTHROPIC_BASE_URL=http://127.0.0.1:4350`.
+
+Sem os scripts, dá para subir direto, com uma ponte só:
 
 ```bash
 UPSTREAM_KEY=<chave da ponte> GATEWAY_KEY=<chave que você inventar> node gateway/server.js
-
-# em outro terminal
-ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> \
-  claude --model claude-sonnet-5
+ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> claude
 ```
 
-Qualquer nome de modelo é aceito e vai para `UPSTREAM_MODEL`.
+## Configuração
 
 | Variável | Padrão | Função |
 |---|---|---|
-| `UPSTREAM_URL` | `http://127.0.0.1:4337/v1` | ponte de destino (4327 ChatGPT, 4337 DeepSeek, 4347 Gemini) |
-| `UPSTREAM_KEY` | — (obrigatória) | chave da ponte |
-| `UPSTREAM_MODEL` | `deepseek-web` | modelo da ponte |
+| `UPSTREAM_URL` / `UPSTREAM_KEY` / `UPSTREAM_MODEL` | DeepSeek, `http://127.0.0.1:4337/v1` / — (obrigatória sem `BACKENDS`) / `deepseek-web` | ponte única, quando `BACKENDS` não é usada |
+| `BACKENDS` | só `UPSTREAM_*` | JSON com as pontes, veja abaixo |
+| `ROUTES` | vazio | ordem de tentativa, veja abaixo |
 | `GATEWAY_KEY` | vazia | se definida, exige `x-api-key` ou `Authorization: Bearer` |
 | `GATEWAY_PORT` / `GATEWAY_HOST` | `4350` / `127.0.0.1` | onde escuta |
-| `GATEWAY_BUDGET` | 55000 | máximo de caracteres para prompt de sistema + ferramentas (a ponte limita ~100k no total). Se estourar, o gateway encurta descrições, depois tira as ferramentas `mcp__*`, depois mantém só as básicas |
-| `BACKENDS` | só `UPSTREAM_*` | JSON com várias pontes `[{name,url,key,model,maxChars}]`, em ordem |
-| `ROUTES` | vazio | JSON `{"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}`: ordem por nome de modelo pedido |
-| `GATEWAY_COOLDOWN_MS` | 60000 | pausa de uma ponte que falhou |
-| `GATEWAY_CORE_TOOLS` | Read,Write,Edit,Bash,Glob,Grep,… | ferramentas mantidas no último nível |
+| `GATEWAY_BUDGET` | 55000 (os scripts usam 400000) | máximo de caracteres de sistema + ferramentas. Se estourar: encurta descrições, tira as `mcp__*`, mantém só as básicas |
+| `GATEWAY_CORE_TOOLS` | Read, Write, Edit, Bash, Glob, Grep, … | ferramentas mantidas no último nível |
 | `GATEWAY_TIMEOUT_MS` | 450000 | tempo máximo por chamada |
+| `GATEWAY_COOLDOWN_MS` | 60000 | pausa de uma ponte que falhou (queda de conexão pausa só 5 s) |
+| `GATEWAY_IDLE_MS` / `GATEWAY_WARM_MS` | 600000 / 15000 | ocioso para desligar o container / espera para o navegador da ponte abrir |
+| `GATEWAY_FIX_RETRIES` | 2 | reenvios com aviso corretivo quando a resposta vem inválida |
 
-Teste da tradução: `node gateway/test.mjs`. Limites medidos de cada ponte e a regra de roteamento: [`LIMITES.md`](LIMITES.md) (`medir-limite.py` refaz a medição).
+Campos de cada item de `BACKENDS`:
 
-## Limites conhecidos (protótipo)
+| Campo | Função |
+|---|---|
+| `name`, `url`, `key`, `model` | identificação e acesso (obrigatórios) |
+| `maxChars` | maior prompt aceito pela ponte; o gateway compacta o histórico para caber e pula a ponte se mesmo assim não couber |
+| `container` | nome do container Docker; liga sob demanda (veja abaixo) |
+| `group` | marca a entrada como réplica de outra ponte (valor = nome da original) |
+| `concurrency` | pedidos simultâneos nesta ponte (padrão 1; o Muse usa 2 por ter 2 abas) |
+
+## Roteamento
+
+`ROUTES` aceita dois formatos.
+
+**Por demanda (usado hoje, modelo único).** "Demanda" é o tamanho da conversa em caracteres, sem sistema e sem ferramentas. Vence a primeira faixa cujo `max` comporta; a última não tem `max`:
+
+```json
+{"tiers":[
+  {"max":6000,"chain":["mistral","qwen","deepseek","muse","chatgpt","gemini"]},
+  {"chain":["deepseek","muse","chatgpt","gemini"]}
+]}
+```
+
+Conversa pequena tenta as pontes menores primeiro; maior vai para o DeepSeek. O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um modelo só ("GT Auto"). Dentro de uma sessão a conversa só cresce: ela sobe de faixa e nunca volta para uma ponte menor. Se uma ponte falha (cota, captcha, erro, resposta inválida), cai para a próxima; a cadeia sempre termina nas pontes grandes.
+
+**Por nome de modelo.** `{"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}`: a chave é um trecho do nome pedido (o Claude Code usa `haiku` nos subagentes). Vence a primeira que casar.
+
+### Réplicas e distribuição de carga
+
+Cada ponte atende um pedido por vez (uma aba). Para atender vários, o gateway usa **réplicas**: cópias do container com o volume clonado (logadas igual), declaradas com `"group": "<ponte>"`. Na cadeia, um nome vale para a ponte e todas as réplicas.
+
+- Cada demanda vai para **uma** ponte: a menos ocupada do grupo, preferindo a que já está ligada.
+- Se todas do grupo estão cheias, passa para o próximo grupo da cadeia; se não há outro, espera na fila da menos ocupada.
+- Pontes em pausa por falha recente vão para o fim da fila, não são descartadas.
+- Réplicas em uso: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–1,8 GB), Gemini ×1, Muse 1 container com 2 abas (`MUSE_MAX_TABS=2` em `muse/performance.env`).
+
+Crie réplicas com [`scripts/replicar.py`](scripts/replicar.py) (`python3 gateway/scripts/replicar.py deepseek 4437 4438 2`). Ela clona o volume com a original parada por alguns segundos.
+
+### Ligar sob demanda
+
+Com `container` na entrada, o gateway liga o container (`docker start`) quando um pedido o escolhe, espera a ponte responder (`GATEWAY_WARM_MS`) e repete o pedido enquanto ela responde 503 "reconectando". Sem uso por `GATEWAY_IDLE_MS`, desliga. **Só desliga o que ele mesmo ligou**: container que já estava de pé (por exemplo, usado direto pelo OpenCode) nunca é parado. Precisa de `docker` no PATH de quem roda o gateway.
+
+## Guardrails
+
+### Prompt grande demais
+
+1. **Sistema e ferramentas** passam por níveis até caber em `GATEWAY_BUDGET`: descrições mais curtas, depois sem as ferramentas MCP, depois só as básicas.
+2. **Histórico:** se a conversa ainda não cabe em `maxChars`, `compactMessages` corta resultados de ferramenta e textos longos das mensagens antigas (a primeira, que é a tarefa, e as 8 últimas ficam intactas). Se ainda não couber, descarta as mais antigas, remove `tool_result` órfão e deixa um aviso de que houve omissão. O log mostra `histórico compactado para <ponte>: antes -> depois`.
+
+Teste: um histórico de 709k caracteres virou 152k e o modelo ainda respondeu o código da primeira mensagem. No OpenCode, `limit.context` do GT Auto é 80000 tokens, para ele resumir a sessão antes de chegar ao teto.
+
+### Resposta inválida
+
+Toda resposta passa por `checkResponse` antes de ir ao cliente.
+
+- **Conserta sozinho:** lixo de bloco de código no início (`json` + numeração de linhas), chamada de ferramenta escrita como texto (`{"type":"grep",...}` ou `{"name":"shell","arguments":{...}}`), apelido de ferramenta (`shell` → `bash`, `cat` → `read`, …), `cmd`/`script` no lugar de `command` e o campo `description` obrigatório que faltou. **Só converte se o destino for uma ferramenta que o cliente declarou.**
+- **Detecta:** resposta vazia, ferramenta inexistente, argumentos que não são JSON, campos obrigatórios faltando (pelo `input_schema` do cliente) e JSON de ferramenta cortado.
+- **Reenvia:** com problema, manda de novo (conversa nova na ponte) com um aviso que lista os nomes de ferramenta válidos, até `GATEWAY_FIX_RETRIES` vezes. Se persistir, passa para a próxima ponte sem pausar a atual (o defeito é do modelo, não da ponte). Se todas falharem, devolve um erro claro e o cliente tenta de novo.
+
+O log registra cada caso: `chamada de ferramenta recuperada do texto: <ferramenta>`, `resposta inválida de <ponte> (<motivo>); reenviando n/2`.
+
+Sem isso, o cliente trata o texto vazado como resposta final e o turno termina sem o trabalho feito.
+
+## Limites conhecidos
 
 - A resposta da ponte chega inteira; o streaming é simulado (com `ping` a cada 10 s para a conexão não cair).
-- O Claude Code manda >100 mil caracteres só de instruções e ferramentas (160 mil com muitos servidores MCP); por isso o gateway encurta descrições e pode tirar as ferramentas MCP. Isso pode piorar o uso de ferramentas mais complexas.
-- Uma chamada de ferramenta por turno (limite da ponte). Imagens são omitidas.
-- Tokens de uso são estimados; é lento (passa pela interface web) e vale o mesmo risco dos termos de uso das pontes.
-- Valide em tarefas reais antes de confiar: só foi testado lendo um arquivo.
+- Uma chamada de ferramenta por turno (limite das pontes). Imagens são omitidas.
+- Tokens de uso são estimados. É lento (passa pela interface web) e vale o risco dos termos de uso dos sites.
+- O gateway não julga se uma resposta bem formatada está certa (por exemplo, um comando inadequado).
+- Cada reenvio corretivo custa outra chamada (7–50 s).
+- A compactação perde detalhe das mensagens antigas; em sessão muito longa o modelo pode esquecer o que leu no começo.
 
-## Ligar sob demanda
+## Testes
 
-Se um backend tiver `"container": "<nome do container docker>"` em `BACKENDS`, o gateway liga o container (`docker start`) quando um pedido o escolhe,
-espera a ponte responder (`GATEWAY_WARM_MS`, padrão 15000, para o navegador abrir) e repete na mesma ponte enquanto ela responde 503 "reconectando".
-Depois de `GATEWAY_IDLE_MS` (padrão 600000 = 10 min) sem uso, desliga. **Só desliga o que ele mesmo ligou**: um container que já estava de pé
-(por exemplo usado direto pelo OpenCode) nunca é parado. Requer `docker` no PATH de quem roda o gateway.
+```bash
+node gateway/test.mjs   # tradução, roteamento, réplicas, compactação, recuperação de ferramenta e validação
+```
 
-## Roteamento por demanda (modelo único)
-
-`ROUTES` também aceita faixas: `{"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek","muse"]},{"chain":["deepseek","muse","chatgpt","gemini"]}]}`.
-A demanda é o tamanho da conversa em chars (sem sistema/ferramentas). Conversa pequena tenta as pontes menores primeiro; maior vai para o DeepSeek.
-O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um único modelo ("GT Auto"). Se uma ponte falhar (cota, captcha, erro),
-cai para a próxima da cadeia, que sempre termina nas pontes grandes. Dentro de uma sessão a conversa só cresce: ela sobe de faixa e não volta.
-Os scripts do usuário (`gt-gateway`, `gt-claude`, `gt-opencode`) ficam em `~/.local/bin`; as pontes pequenas ficam em `~/.config/gateway/bridges.json`.
-
-## Réplicas e distribuição de carga
-
-Um backend pode ter réplicas: entradas com `"group": "<nome do backend original>"` (cópias do container com o volume clonado, logadas igual; ex.: `deepseek-opencode-bridge-2`, portas 4437/4537).
-Na cadeia, o nome do grupo vale para a ponte e todas as réplicas. Cada demanda vai para **uma** ponte: a menos ocupada do grupo (`inflight`), preferindo a que já está ligada;
-`concurrency` (padrão 1) limita pedidos simultâneos por ponte (o Muse tem 2 abas, então 2). Se todas do grupo estão cheias, passa para o próximo grupo da cadeia.
-Pontes em pausa por falha recente vão para o fim da fila (não são descartadas), e queda de conexão (reinício) pausa só 5 s. Se nada comporta o prompt, o erro devolvido é o da última ponte tentada, não o de tamanho.
-Réplicas atuais: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–1,8 GB), Gemini ×1, Muse 1 container com 2 abas.
-
-## Chamada de ferramenta escrita como texto
-
-Se a ponte devolve como texto algo como `{"type":"grep","pattern":"x"}` ou `{"name":"grep","arguments":{...}}`, o gateway converte em `tool_use`
-**somente se o nome (ou um apelido conhecido, como `shell` → `bash`) for de uma ferramenta que o cliente declarou**; ignora lixo antes do JSON (cabeçalho "json" e numeração de linhas do bloco de código) (`salvageToolCall`); nos demais casos segue como texto. Cada recuperação aparece no log
-("chamada de ferramenta recuperada do texto"). Sem isso o cliente trata como resposta final e o turno termina sem o trabalho feito.
-
-## Histórico grande (compactação)
-
-Se a conversa não cabe em `maxChars` da ponte, o gateway compacta o histórico (`compactMessages`) antes de recusar: 1) corta resultados de ferramenta e textos
-longos das mensagens antigas (as últimas 8 e a primeira, que é a tarefa, ficam intactas); 2) se ainda não couber, descarta as mensagens mais antigas e
-remove `tool_result` órfão, inserindo um aviso de que mensagens foram omitidas. O log mostra "histórico compactado para <ponte>: antes -> depois".
-Teste: histórico de 709k chars virou 152k e o modelo ainda respondeu o código da 1ª mensagem. No OpenCode, `limit.context` do GT Auto é 80000 (tokens), para ele também compactar antes.
-
-## Guardrails (validação da resposta)
-
-Toda resposta da ponte passa por `checkResponse` antes de ir ao cliente:
-- **Conserta sozinho:** lixo de bloco de código no início do texto (`json` + numeração de linhas), chamada de ferramenta escrita como texto, apelido de ferramenta (`shell` → `bash`), `cmd`/`script` no lugar de `command`, e `description` obrigatório que faltou (derivado do comando).
-- **Detecta problema:** resposta vazia, ferramenta inexistente, argumentos que não são JSON, campos obrigatórios faltando (pelo `input_schema` do cliente) e JSON de ferramenta truncado/quebrado.
-- **Reenvia:** com problema, manda de novo (conversa nova na ponte) com um aviso corretivo que lista os nomes de ferramenta válidos, até `GATEWAY_FIX_RETRIES` vezes (padrão 2). Se persistir, passa para a próxima ponte **sem** colocar a atual em pausa (o defeito é do modelo, não da ponte). Se todas falharem, devolve erro claro ao cliente, que tenta de novo.
-O log registra cada caso: "resposta inválida de <ponte> (<motivo>); reenviando n/2".
+`medir-limite.py` refaz a medição de cada ponte (ver [`LIMITES.md`](LIMITES.md)).

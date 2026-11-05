@@ -1,24 +1,36 @@
-# Pontes web → OpenCode
+# Pontes web → OpenCode e Claude Code
 
-Quatro pontes que expõem a interface web de um chat de IA como uma API local compatível com OpenAI, para usar no [OpenCode](https://opencode.ai). Cada ponte roda em um container Docker com um Chromium próprio: você faz login uma vez, pela tela remota (noVNC), e a sessão fica salva em um volume.
+Pontes que expõem a interface web de um chat de IA como uma API local compatível com OpenAI, e um gateway que as junta atrás de uma única API no formato da Anthropic. Dá para usar no [OpenCode](https://opencode.ai) e no Claude Code. Cada ponte roda em um container Docker com um Chromium próprio: você faz login uma vez, pela tela remota (noVNC), e a sessão fica salva em um volume.
 
 > Projeto comunitário e não oficial. Usa a conta pessoal de cada site, não a API oficial. Mudanças nos sites podem quebrar a automação, e os termos de cada serviço continuam valendo. Cada pessoa autentica a própria conta.
 
-| Pasta | Site | API (OpenCode) | Tela de login (noVNC) | Modelo | Limite de prompt |
+## Peças
+
+| Peça | O que é |
+|---|---|
+| **Pontes** (`muse/`, `chatgpt/`, `deepseek/`, `gemini/`) | uma por site, cada uma com seu Dockerfile, compose, `src/` e testes |
+| **`universal/`** | imagem única para pontes extras: `PROVIDER=<nome>` escolhe o adaptador em `src/sites/` (Qwen, Mistral, Kimi, Z.ai, MiniMax, Duck.ai, DeepSeek) |
+| **`gateway/`** | API `POST /v1/messages` (Anthropic) que roteia entre as pontes, liga e desliga os containers, ajusta o prompt ao limite de cada uma e confere as respostas |
+
+## As quatro pontes
+
+| Pasta | Site | API (OpenCode) | Tela de login (noVNC) | Modelo | Maior prompt medido |
 |---|---|---|---|---|---|
-| [`muse/`](muse) | Muse AI | `http://127.0.0.1:4317/v1` | `http://127.0.0.1:4318` | `muse-web` | 500.000 caracteres |
-| [`chatgpt/`](chatgpt) | ChatGPT | `http://127.0.0.1:4327/v1` | `http://127.0.0.1:4328` | `chatgpt-web` | 100.000 caracteres |
-| [`deepseek/`](deepseek) | DeepSeek | `http://127.0.0.1:4337/v1` | `http://127.0.0.1:4338` | `deepseek-web` | 100.000 caracteres |
+| [`muse/`](muse) | Muse AI | `http://127.0.0.1:4317/v1` | `http://127.0.0.1:4318` | `muse-web` | 480.000 caracteres |
+| [`chatgpt/`](chatgpt) | ChatGPT | `http://127.0.0.1:4327/v1` | `http://127.0.0.1:4328` | `chatgpt-web` | 475.000 caracteres |
+| [`deepseek/`](deepseek) | DeepSeek | `http://127.0.0.1:4337/v1` | `http://127.0.0.1:4338` | `deepseek-web` | 475.000 caracteres |
 | [`gemini/`](gemini) | Gemini | `http://127.0.0.1:4347/v1` | `http://127.0.0.1:4348` | `gemini-web` | 100.000 caracteres |
 
-Cada chamada espera no máximo 7 minutos. Todas as portas escutam só em `127.0.0.1`. O painel de cada ponte abre na porta da API (ex.: `http://127.0.0.1:4327`).
+O limite padrão no compose é 100.000 caracteres (`MUSE_MAX_PROMPT_CHARS`). Para subir, crie um `.env` na pasta da ponte, por exemplo `MUSE_MAX_PROMPT_CHARS=480000` e `MUSE_ROTATE_CHARS=900000` (no Muse, em `performance.env`). Os valores que funcionam de verdade, ponte por ponte, estão em [`gateway/LIMITES.md`](gateway/LIMITES.md).
+
+Cada chamada espera no máximo 7 minutos (`MUSE_REQUEST_TIMEOUT_MS`). Todas as portas escutam só em `127.0.0.1`. O painel de cada ponte abre na porta da API (ex.: `http://127.0.0.1:4327`).
 
 ## Requisitos
 
 - Docker com o plugin Compose (no Windows, dentro do WSL 2; não precisa de Docker Desktop);
-- OpenCode instalado.
+- OpenCode e/ou Claude Code instalados.
 
-## Como usar
+## Subir uma ponte
 
 ### Muse (com instalador)
 
@@ -71,12 +83,45 @@ bash instalar.sh
 
    Para DeepSeek e Gemini, troque nome, porta e modelo pela tabela acima.
 
-5. Reinicie o OpenCode e escolha o modelo na lista.
+5. Reinicie o OpenCode e escolha o modelo na lista. O OpenCode só lê a configuração ao abrir: janelas e o servidor `opencode serve` que já estavam rodando precisam ser reiniciados.
+
+## Pontes extras (`universal/`)
+
+Uma imagem, um container por provedor. O adaptador de cada site fica em `universal/src/sites/<provedor>.js` (seletores, regras de login e de resposta).
+
+```bash
+cd universal
+docker build -t universal-bridge:local .
+PROVIDER=qwen PORT_API=4361 PORT_VNC=4362 docker compose -p bridge-qwen up -d
+# faça login no noVNC (porta 4362) e pegue a chave: docker exec bridge-qwen cat /data/api-key
+```
+
+| Provedor | Portas (API / noVNC) | Maior prompt medido | Observação |
+|---|---|---|---|
+| `mistral` | 4367 / 4368 | 60.000 | rápido; entra no gateway para conversas pequenas |
+| `qwen` | 4361 / 4362 | 70.000 | idem |
+| `minimax` | 4373 / 4374 | ~90.000 | é um agente: gasta créditos; captcha trava a página |
+| `zai` | 4365 / 4366 | 30.000 | de 100k perde o miolo do texto sem avisar |
+| `kimi` | 4363 / 4364 | 30.000 | a cota gratuita esgota em poucas chamadas |
+| `duck` | 4369 / 4370 | 10.000 | sem login; o site limita a mensagem a 16.000 caracteres |
+| `deepseek` | — | — | adaptador de referência |
+
+O Copilot não funciona: a Microsoft bloqueia o login no Chromium automatizado. Para um site novo, copie um adaptador (por exemplo `qwen.js`) e ajuste os seletores com o site logado. O contrato são os exports que `universal/src/server.js` usa: `DEFAULT_URL`, `MESSAGE_UNIT_SELECTOR`, `ASSISTANT_TEXT_SELECTOR`, `STREAMING_SELECTOR`, `COMPOSER_SELECTOR`, `SEND_SELECTOR`, `CONVERSATION_PATH_RE` e as funções `stampMessages`, `messageRole`, `isAssistantMessageId`. Opcionais: `PAGE_CSS` (esconde elementos por CSS) e `LIMIT_TEXT_RE` (texto de cota/fila do site, vira 429 `provider_quota`).
+
+## Gateway (OpenCode e Claude Code sobre as pontes)
+
+```bash
+cp gateway/scripts/gt-* ~/.local/bin/
+gt-claude      # Claude Code pelo gateway
+gt-opencode    # OpenCode pelo gateway (modelo único "GT Auto")
+```
+
+O gateway escolhe a ponte pelo tamanho da conversa, distribui a carga entre réplicas, liga os containers só quando precisam, compacta históricos grandes e reenvia respostas inválidas. Configuração, roteamento e guardrails: [`gateway/README.md`](gateway/README.md). Limites e a rota em uso: [`gateway/LIMITES.md`](gateway/LIMITES.md).
 
 ## Dia a dia
 
 - **Atualizar uma ponte:** `cd <pasta> && docker compose up -d --build`. Espere não haver envio em andamento; o login continua no volume.
-- **Ver logs:** `docker logs -f chatgpt-opencode-bridge`.
+- **Ver logs:** `docker logs -f chatgpt-opencode-bridge`; do gateway, `~/.config/gateway/gateway.log`.
 - **Reenvio de uma chamada:** o OpenCode reenvia o mesmo pedido quando a chamada falha. A ponte reconhece o pedido repetido e volta a ler a resposta que já está na conversa, sem digitar de novo no site.
 - **Pedido preso:** o painel tem **Limpar pendentes** e **Reenviar pendentes**. Eles ignoram a sessão que está em andamento. Um pendente antigo (10 min) é liberado quando chega uma mensagem nova.
 - **Uma conversa por sessão do OpenCode:** a ponte abre uma conversa nova no site para cada sessão. No ChatGPT, se a conversa ficar grande demais ou quebrar, ela abre uma nova automaticamente.
@@ -85,7 +130,7 @@ bash instalar.sh
 
 ## Segurança
 
-- A chave da ponte fica no volume (`/data/api-key`) e no seu `opencode.jsonc`. Nunca a coloque no repositório nem no chat.
+- A chave da ponte fica no volume (`/data/api-key`) e no seu `opencode.jsonc`; a do gateway, em `~/.config/gateway/key`. Nunca as coloque no repositório nem no chat.
 - Os arquivos `.env`, `data/` e `opencode.json*` estão no `.gitignore`.
 - Usar a interface web pela automação pode contrariar os termos do serviço. O risco é seu.
 
@@ -96,17 +141,9 @@ muse/       ponte do Muse AI (instalador Windows/WSL, docs, testes)
 chatgpt/    ponte do ChatGPT (chatgpt.com)
 deepseek/   ponte do DeepSeek (chat.deepseek.com)
 gemini/     ponte do Gemini (gemini.google.com)
-gateway/    gateway Anthropic: deixa o Claude Code falar com qualquer ponte acima
+universal/  imagem única das pontes extras; src/sites/<provedor>.js
+gateway/    server.js (sem dependências), test.mjs, LIMITES.md, medir-limite.py
+  scripts/  gt-gateway, gt-claude, gt-opencode, replicar.py e exemplos de configuração
 ```
 
-- **As 4 pontes** (`muse`, `chatgpt`, `deepseek`, `gemini`): cada uma sobe um Chromium em Docker, mantém o seu login no site e expõe uma API compatível com OpenAI (`/v1/chat/completions`). São independentes: cada pasta tem `Dockerfile`, `docker-compose.yml`, `src/` e testes (`npm ci && npm test`).
-- **`gateway/`**: serviço pequeno, sem dependências, que expõe `POST /v1/messages` (formato da API da Anthropic, com `tool_use`) e traduz para o `/v1/chat/completions` de uma ponte (padrão: DeepSeek). Com ele, `ANTHROPIC_BASE_URL=http://127.0.0.1:4350 claude` usa o chat do DeepSeek por trás. É um protótipo: veja os limites e as variáveis em [`gateway/README.md`](gateway/README.md).
-
-## Gateway (Claude Code sobre as pontes)
-
-```bash
-UPSTREAM_KEY=<chave da ponte> GATEWAY_KEY=<chave que você inventar> node gateway/server.js
-ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> claude
-```
-
-Qualquer nome de modelo é aceito e vai para o modelo da ponte. Testado com chat, chamada de ferramenta, streaming e o Claude Code lendo um arquivo.
+As pontes são independentes: cada pasta tem `Dockerfile`, `docker-compose.yml`, `src/` e testes (`npm ci && npm test`). O gateway fala `POST /v1/messages` (formato da API da Anthropic, com `tool_use`) e traduz para o `/v1/chat/completions` das pontes.

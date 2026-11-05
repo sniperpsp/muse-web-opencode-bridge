@@ -1,0 +1,20 @@
+[
+  {
+    "name": "mistral",
+    "url": "http://127.0.0.1:4367/v1",
+    "key": "COLE_A_CHAVE_DA_PONTE",
+    "model": "mistral-web",
+    "maxChars": 60000,
+    "container": "bridge-mistral",
+    "concurrency": 1
+  },
+  {
+    "name": "qwen",
+    "url": "http://127.0.0.1:4361/v1",
+    "key": "COLE_A_CHAVE_DA_PONTE",
+    "model": "qwen-web",
+    "maxChars": 70000,
+    "container": "bridge-qwen",
+    "concurrency": 1
+  }
+]
