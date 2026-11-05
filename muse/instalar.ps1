@@ -47,7 +47,7 @@ try {
         Run-Checked 'wsl.exe' @('-d', $Distro, '--exec', 'bash', '-c', $bootstrap)
         $linuxHome = & wsl.exe -d $Distro --exec printenv HOME
         if ($LASTEXITCODE -ne 0) { throw 'Nao consegui localizar o home do WSL.' }
-        $project = "$linuxHome".Trim() + '/muse-web-opencode-bridge'
+        $project = "$linuxHome".Trim() + '/muse-web-opencode-bridge/muse'
     }
 
     $installerArgs = @()
