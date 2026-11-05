@@ -1,0 +1,25 @@
+services:
+  gemini-bridge:
+    build:
+      context: .
+      args:
+        MUSE_BUILD_REVISION: ${MUSE_BUILD_REVISION:-unknown}
+    environment:
+      MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-100000}
+      MUSE_URL: https://gemini.google.com/app
+      MUSE_VNC_URL: http://127.0.0.1:4348/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4348&path=websockify
+      MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-420000}
+    image: gemini-opencode-bridge:local
+    container_name: gemini-opencode-bridge
+    init: true
+    restart: unless-stopped
+    shm_size: 2gb
+    ports:
+      - "127.0.0.1:4347:4317"
+      - "127.0.0.1:4348:7900"
+    volumes:
+      - gemini-bridge-data:/data
+
+volumes:
+  gemini-bridge-data:
+    name: gemini-opencode-bridge-data
