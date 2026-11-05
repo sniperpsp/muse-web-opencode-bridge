@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -21,4 +21,19 @@ assert.equal(req.tools[0].function.name, "Read");
 const out = fromOpenAI({ choices: [{ message: { content: null, tool_calls: [{ id: "c1", function: { name: "Read", arguments: '{"p":"b"}' } }] }, finish_reason: "tool_calls" }] }, "m");
 assert.equal(out.stop_reason, "tool_use");
 assert.deepEqual(out.content[0], { type: "tool_use", id: "c1", name: "Read", input: { p: "b" } });
+assert.equal(unwrapFinal('{"type":"final","text":"Oi!"}'), "Oi!");
+assert.equal(unwrapFinal('{"type":"final","text":"Oi! só "oi"."}'), 'Oi! só "oi".');
+assert.equal(unwrapFinal("texto normal {x}"), "texto normal {x}");
+// Prompt gigante (como o Claude Code com muitas ferramentas MCP) precisa caber no orçamento.
+const big = toOpenAI({
+  system: "x".repeat(80000),
+  tools: [
+    ...["Read", "Edit", "Bash"].map((name) => ({ name, description: "d".repeat(3000), input_schema: { type: "object", properties: { a: { type: "string", description: "p".repeat(500) } } } })),
+    ...Array.from({ length: 200 }, (_, i) => ({ name: `mcp__srv__t${i}`, description: "d".repeat(2000), input_schema: { type: "object", properties: { a: { type: "string", description: "p".repeat(300) } } } })),
+  ],
+  messages: [{ role: "user", content: "oi" }],
+});
+const size = big.messages[0].content.length + JSON.stringify(big.tools).length;
+assert.ok(size <= 60000, `prompt fixo com ${size} chars`);
+assert.deepEqual(big.tools.map((t) => t.function.name), ["Read", "Edit", "Bash"]);
 console.log("ok");

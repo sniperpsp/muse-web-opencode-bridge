@@ -17,9 +17,16 @@ const PORT = Number(process.env.GATEWAY_PORT || 4350);
 const HOST = process.env.GATEWAY_HOST || "127.0.0.1";
 const TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS || 450000);
 // A ponte limita o prompt (~100k chars). O Claude Code manda >100k só em instruções e ferramentas, então encurtamos.
-const SYSTEM_MAX = Number(process.env.GATEWAY_SYSTEM_MAX || 15000);
-const TOOL_DESC_MAX = Number(process.env.GATEWAY_TOOL_DESC_MAX || 300);
-const PROP_DESC_MAX = Number(process.env.GATEWAY_PROP_DESC_MAX || 100);
+// BUDGET = máximo de caracteres para prompt de sistema + catálogo de ferramentas (o resto fica para a conversa).
+const BUDGET = Number(process.env.GATEWAY_BUDGET || 55000);
+const CORE_TOOLS = new Set((process.env.GATEWAY_CORE_TOOLS || "Read,Write,Edit,MultiEdit,Bash,Glob,Grep,WebFetch,WebSearch,TodoWrite,Task,Agent,NotebookEdit,Skill").split(","));
+// Níveis tentados em ordem até caber no BUDGET.
+const LEVELS = [
+  { sys: 15000, tool: 300, prop: 100, mcp: true },
+  { sys: 10000, tool: 150, prop: 50, mcp: true },
+  { sys: 8000, tool: 120, prop: 40, mcp: false },
+  { sys: 6000, tool: 80, prop: 0, mcp: false, core: true },
+];
 if (!UPSTREAM_KEY) { console.error("Defina UPSTREAM_KEY."); process.exit(1); }
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -33,18 +40,38 @@ function safeEqual(a, b) {
 
 const clip = (s, n) => (typeof s === "string" && s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-function slimSchema(node) {
-  if (Array.isArray(node)) return node.map(slimSchema);
+function slimSchema(node, propMax) {
+  if (Array.isArray(node)) return node.map((n) => slimSchema(n, propMax));
   if (!node || typeof node !== "object") return node;
   const out = {};
-  for (const [k, v] of Object.entries(node)) out[k] = k === "description" ? clip(v, PROP_DESC_MAX) : slimSchema(v);
+  for (const [k, v] of Object.entries(node)) {
+    if (k === "description") { if (propMax > 0) out[k] = clip(v, propMax); } else out[k] = slimSchema(v, propMax);
+  }
   return out;
+}
+
+function buildTools(tools, lv) {
+  return tools
+    .filter((t) => (lv.mcp || !String(t.name).startsWith("mcp__")) && (!lv.core || CORE_TOOLS.has(t.name)))
+    .map((t) => ({ type: "function", function: { name: t.name, description: clip(t.description || "", lv.tool), parameters: slimSchema(t.input_schema, lv.prop) || { type: "object", properties: {} } } }));
+}
+
+// Escolhe o primeiro nível cujo (sistema + ferramentas) cabe no BUDGET; o último vale de qualquer jeito.
+function fitPrompt(body) {
+  const system = text(body.system);
+  let pick;
+  for (const lv of LEVELS) {
+    const tools = buildTools(body.tools || [], lv);
+    pick = { system: clip(system, lv.sys), tools };
+    if (pick.system.length + JSON.stringify(tools).length <= BUDGET) break;
+  }
+  return pick;
 }
 
 // ---- Anthropic -> OpenAI -------------------------------------------------
 export function toOpenAI(body) {
   const messages = [];
-  const system = clip(text(body.system), SYSTEM_MAX);
+  const { system, tools } = fitPrompt(body);
   if (system) messages.push({ role: "system", content: system });
   for (const m of body.messages || []) {
     if (typeof m.content === "string") { messages.push({ role: m.role, content: m.content }); continue; }
@@ -72,8 +99,8 @@ export function toOpenAI(body) {
   const out = { model: UPSTREAM_MODEL, messages, stream: false };
   if (body.max_tokens) out.max_tokens = body.max_tokens;
   if (body.temperature !== undefined) out.temperature = body.temperature;
-  if (Array.isArray(body.tools) && body.tools.length) {
-    out.tools = body.tools.map((t) => ({ type: "function", function: { name: t.name, description: clip(t.description || "", TOOL_DESC_MAX), parameters: slimSchema(t.input_schema) || { type: "object", properties: {} } } }));
+  if (tools.length) {
+    out.tools = tools;
     const tc = body.tool_choice;
     if (tc?.type === "any") out.tool_choice = "required";
     else if (tc?.type === "tool" && tc.name) out.tool_choice = { type: "function", function: { name: tc.name } };
@@ -82,12 +109,21 @@ export function toOpenAI(body) {
   return out;
 }
 
+// Com ferramentas, o modelo às vezes devolve o protocolo cru da ponte: {"type":"final","text":"..."}.
+export function unwrapFinal(t) {
+  const s = String(t).trim();
+  try { const o = JSON.parse(s); if (o && o.type === "final" && typeof o.text === "string") return o.text; } catch { /* pode ser JSON malformado: tenta por padrão */ }
+  // o modelo costuma esquecer de escapar aspas internas, então o JSON.parse falha
+  const m = s.match(/^\{\s*"type"\s*:\s*"final"\s*,\s*"text"\s*:\s*"([\s\S]*)"\s*\}$/);
+  return m ? m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"') : t;
+}
+
 // ---- OpenAI -> Anthropic -------------------------------------------------
 export function fromOpenAI(res, model) {
   const choice = res.choices?.[0] || {};
   const msg = choice.message || {};
   const content = [];
-  if (msg.content) content.push({ type: "text", text: msg.content });
+  if (msg.content) content.push({ type: "text", text: unwrapFinal(msg.content) });
   for (const c of msg.tool_calls || []) {
     let input = {};
     try { input = JSON.parse(c.function?.arguments || "{}"); } catch { /* argumentos inválidos: envia vazio */ }
@@ -151,10 +187,12 @@ async function handleMessages(req, res) {
     ping = setInterval(() => sse(res, "ping", {}), 10000);
   }
   try {
+    const payload = toOpenAI(body);
+    console.log(`[${new Date().toISOString()}] /v1/messages ${JSON.stringify(payload).length} chars, ${payload.tools?.length || 0} ferramentas`);
     const up = await fetch(`${UPSTREAM_URL}/chat/completions`, {
       method: "POST", signal: abort.signal,
       headers: { "content-type": "application/json", authorization: `Bearer ${UPSTREAM_KEY}`, "x-opencode-session-id": sessionId(body) },
-      body: JSON.stringify(toOpenAI(body)),
+      body: JSON.stringify(payload),
     });
     const data = await up.json().catch(() => ({}));
     if (!up.ok) throw Object.assign(new Error(data?.error?.message || `ponte respondeu ${up.status}`), { status: up.status });
