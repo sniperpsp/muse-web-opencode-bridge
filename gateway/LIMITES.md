@@ -67,7 +67,12 @@ Só **DeepSeek, Muse e ChatGPT** entram na rota. MiniMax (90k) e Qwen (70k) fica
 Kimi, Z.ai, Duck e Copilot ficam fora (contexto pequeno demais para o prompt fixo do Claude Code, cotas baixas ou login bloqueado).
 A base `universal/` e os adaptadores em `universal/src/sites/` continuam no repositório.
 
-## Regra de roteamento adotada
+## Roteamento por demanda (2026-11-05, substitui o roteamento por nome de modelo)
+
+Modelo único ("GT Auto"). Conversa de até 6000 chars: Mistral → Qwen → DeepSeek → Muse → ChatGPT → Gemini. Acima disso: DeepSeek → Muse → ChatGPT → Gemini.
+Mistral (60k) e Qwen (70k) entram como pontes pequenas e ligam sob demanda; qualquer falha delas (429 de cota, captcha, erro) cai para as grandes.
+
+## Regra de roteamento anterior (por nome de modelo)
 
 Os subagentes do Claude Code costumam pedir o modelo `haiku`; o agente principal pede `sonnet`/`opus`.
 

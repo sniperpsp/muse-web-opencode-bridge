@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -41,5 +41,10 @@ const routes = { haiku: ["chatgpt", "muse"], default: ["deepseek", "muse", "chat
 assert.deepEqual(chainFor("claude-haiku-5-5", bk, routes).map((b) => b.name), ["chatgpt", "muse"]);
 assert.deepEqual(chainFor("claude-sonnet-5-5", bk, routes).map((b) => b.name), ["deepseek", "muse", "chatgpt"]);
 assert.deepEqual(chainFor("qualquer", bk, {}).map((b) => b.name), ["deepseek", "muse", "chatgpt"]);
+const tiers = { tiers: [{ max: 6000, chain: ["muse", "chatgpt"] }, { chain: ["deepseek", "muse"] }] };
+assert.deepEqual(chainFor("x", bk, tiers, 100).map((b) => b.name), ["muse", "chatgpt"]);
+assert.deepEqual(chainFor("x", bk, tiers, 6000).map((b) => b.name), ["muse", "chatgpt"]);
+assert.deepEqual(chainFor("x", bk, tiers, 6001).map((b) => b.name), ["deepseek", "muse"]);
+assert.ok(demandOf({ messages: [{ role: "user", content: "oi" }] }) > 0);
 assert.ok(isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
 console.log("ok");

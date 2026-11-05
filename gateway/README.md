@@ -48,3 +48,11 @@ Se um backend tiver `"container": "<nome do container docker>"` em `BACKENDS`, o
 espera a ponte responder (`GATEWAY_WARM_MS`, padrão 15000, para o navegador abrir) e repete na mesma ponte enquanto ela responde 503 "reconectando".
 Depois de `GATEWAY_IDLE_MS` (padrão 600000 = 10 min) sem uso, desliga. **Só desliga o que ele mesmo ligou**: um container que já estava de pé
 (por exemplo usado direto pelo OpenCode) nunca é parado. Requer `docker` no PATH de quem roda o gateway.
+
+## Roteamento por demanda (modelo único)
+
+`ROUTES` também aceita faixas: `{"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek","muse"]},{"chain":["deepseek","muse","chatgpt","gemini"]}]}`.
+A demanda é o tamanho da conversa em chars (sem sistema/ferramentas). Conversa pequena tenta as pontes menores primeiro; maior vai para o DeepSeek.
+O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um único modelo ("GT Auto"). Se uma ponte falhar (cota, captcha, erro),
+cai para a próxima da cadeia, que sempre termina nas pontes grandes. Dentro de uma sessão a conversa só cresce: ela sobe de faixa e não volta.
+Os scripts do usuário (`gt-gateway`, `gt-claude`, `gt-opencode`) ficam em `~/.local/bin`; as pontes pequenas ficam em `~/.config/gateway/bridges.json`.

@@ -32,12 +32,20 @@ const LEVELS = [
 // BACKENDS (JSON): [{"name":"deepseek","url":"http://127.0.0.1:4337/v1","key":"...","model":"deepseek-web","maxChars":240000}, ...]
 // Tentados em ordem; pula quem não comporta o prompt ou falhou há pouco; troca para o próximo em caso de erro.
 const BACKENDS = process.env.BACKENDS ? JSON.parse(process.env.BACKENDS) : [{ name: "default", url: UPSTREAM_URL, key: UPSTREAM_KEY, model: UPSTREAM_MODEL, maxChars: 240000 }];
-// ROUTES (JSON): {"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}
-// A chave é um trecho do nome do modelo pedido (o Claude Code usa haiku nos subagentes leves); vence a primeira que casar.
+// ROUTES (JSON), dois formatos:
+//  por modelo:  {"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}  (a chave é um trecho do nome do modelo pedido)
+//  por demanda: {"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek"]},{"chain":["deepseek","muse","chatgpt"]}]}
+//    "demanda" = tamanho (chars) da conversa, sem sistema/ferramentas; vence a primeira faixa cujo max comporta (a última não tem max).
+//    Dentro de uma sessão a conversa só cresce, então ela sobe de faixa e nunca volta para uma ponte menor.
 const ROUTES = process.env.ROUTES ? JSON.parse(process.env.ROUTES) : {};
-export function chainFor(model, backends = BACKENDS, routes = ROUTES) {
-  const key = Object.keys(routes).find((k) => k !== "default" && String(model).toLowerCase().includes(k.toLowerCase()));
-  const names = routes[key] || routes.default;
+export const demandOf = (body) => JSON.stringify(body?.messages || []).length;
+export function chainFor(model, backends = BACKENDS, routes = ROUTES, demand = 0) {
+  let names;
+  if (Array.isArray(routes.tiers)) names = (routes.tiers.find((t) => t.max === undefined || demand <= t.max) || routes.tiers.at(-1))?.chain;
+  else {
+    const key = Object.keys(routes).find((k) => k !== "default" && String(model).toLowerCase().includes(k.toLowerCase()));
+    names = routes[key] || routes.default;
+  }
   if (!names) return backends;
   return names.map((n) => backends.find((b) => b.name === n)).filter(Boolean);
 }
@@ -244,7 +252,7 @@ async function handleMessages(req, res) {
   try {
     let message, last;
     const now = Date.now();
-    const chain = chainFor(body.model);
+    const chain = chainFor(body.model, BACKENDS, ROUTES, demandOf(body));
     const ready = chain.filter((b) => (downUntil.get(b.name) || 0) <= now);
     for (const b of ready.length ? ready : chain) {
       // deixa ~40k para a conversa; mínimo de 20k para sistema + ferramentas
