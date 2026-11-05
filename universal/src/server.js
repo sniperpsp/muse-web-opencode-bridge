@@ -524,6 +524,15 @@ async function clickSiteTryAgain(signal) {
 // A IA abre um captcha de quebra-cabeça quando desconfia de automação; sem alguém resolver, a resposta nunca chega.
 const CAPTCHA_TEXT_RE = /put the correct piece|drag the slider|slide to (?:complete|verify)|verify you are (?:a )?human|arraste a pe[çc]a|arraste o controle|resolva o captcha/i;
 const CAPTCHA_SELECTOR = process.env.MUSE_CAPTCHA_SELECTOR || '[id*="captcha" i], [class*="captcha" i], iframe[src*="captcha" i], [class*="geetest" i], [id*="tcaptcha" i]';
+// Limite/fila do site (ex.: "Too many people are chatting"): o adaptador exporta LIMIT_TEXT_RE; o gateway trata 429 como cota esgotada e passa para outra ponte.
+async function museLimit(signal) {
+  if (!SITE.LIMIT_TEXT_RE) return "";
+  return museBrowserOperation(() => musePage.evaluate(({ source, dismiss }) => {
+    const m = new RegExp(source, "i").exec(document.body.innerText || "");
+    if (m && dismiss) document.querySelector(dismiss)?.click();
+    return m ? m[0] : "";
+  }, { source: SITE.LIMIT_TEXT_RE.source, dismiss: SITE.LIMIT_DISMISS_SELECTOR || "" }), signal, "Verificar limite do site").catch(() => "");
+}
 let captchaActive = false;
 async function museCaptcha(signal) {
   const found = await museBrowserOperation(() => musePage.evaluate(({ selector, source }) => {
@@ -806,6 +815,12 @@ async function waitForResponse(beforeMessageIds, beforeMedia, signal) {
     if (await museCaptcha(signal)) {
       // O envio fica pendente: repetir a mesma chamada depois de resolver retoma a leitura sem reenviar.
       throw Object.assign(new Error("A IA pediu um captcha (quebra-cabeça). Resolva no painel http://127.0.0.1:4337 (clique na imagem) ou no noVNC http://127.0.0.1:4338 e repita a mesma mensagem: ela não será reenviada em duplicidade."), { status: 503, code: "captcha_required", retryable: true });
+    }
+    const limitHit = await museLimit(signal);
+    if (limitHit) {
+      conversation.pendingSubmission = undefined;
+      await saveConversations();
+      throw Object.assign(new Error(`O site informou limite/fila (${limitHit}). Cota esgotada ou serviço lotado: use outra ponte.`), { status: 429, code: "provider_quota", retryable: false });
     }
     const messages = await readChatMessages(beforeMessageIds, signal);
     const user = messages.findLast((message) => message.role === "user" && !beforeMessageIds.includes(message.id));

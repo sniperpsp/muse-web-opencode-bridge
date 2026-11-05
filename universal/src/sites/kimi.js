@@ -27,3 +27,6 @@ export const GENERIC_COMPOSER_SELECTOR = 'textarea, [contenteditable="true"], [r
 export const SEND_BUTTON_NAME_RE = /send|enviar/i;
 export const SEND_SELECTOR = ".send-button-container:not(.disabled):not(.stop)";
 export const MEDIA_SELECTOR = ".markdown-container:not(.toolcall-content-text) img, .markdown-container:not(.toolcall-content-text) a[download]";
+// Fila/limite do Kimi: aparece como pop-up "Too many people are chatting with Kimi".
+export const LIMIT_TEXT_RE = /too many people are chatting|subscription will grant you priority|muitas pessoas est[aã]o/i;
+export const LIMIT_DISMISS_SELECTOR = "";

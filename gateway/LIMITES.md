@@ -18,6 +18,12 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 | **Gemini** | gemini-web | 5k | leu os 3 (1ª mensagem após reiniciar) | 16 s | 100k |
 | | | 10k–60k, em sequência | **todas falharam**: a página fica "pensando", a URL não vira `/app/<id>`; 3 tentativas cada, ~100 s | 100 s | |
 
+| **Qwen** | qwen-web | 30k / 50k / 70k | leu os 3 | 23–27 s | 70k |
+| | | 100k, 250k | **falhou**: o site responde "Running code interpreter…" em vez de ler o texto | 80 s | |
+| **Kimi** | kimi-web | 18 s com 30k | leu os 3 | 18 s | 30k+ (50k/70k não medidos) |
+| | | 100k | **falhou** (respondeu "Deixa eu verificar a conversa anterior…") | 72 s | |
+| | | depois de ~8 chamadas | **cota**: pop-up "Too many people are chatting"; nem "pong" passa. A ponte devolve 429 `provider_quota` | 7 s | |
+
 ## Conclusões
 
 - **DeepSeek**: o mais rápido e o que mais aguenta. Confiável até **~475k** caracteres; 500k é limítrofe; de 600k em diante falha. Acima de ~600k o gargalo é a própria ponte (colar no campo, `browser-operation` de 15 s), não só o site.
@@ -27,6 +33,10 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 
 O que importa para o Claude Code: o prompt de sistema + ferramentas já ocupa ~100k a 230k, e o histórico cresce a cada turno.
 Por isso o tamanho útil de conversa é bem menor que o limite bruto.
+
+- **Qwen** (ponte `universal`, `PROVIDER=qwen`): confiável até **70k**; de 100k em diante o site abre o code interpreter e devolve lixo. Serve para subagentes pequenos.
+- **Kimi** (`PROVIDER=kimi`): leu 30k, falhou em 100k. A conta gratuita **esgota rápido**: depois de ~8 chamadas (algumas grandes) o site passou a mostrar "Too many people are chatting" e recusa tudo. A ponte detecta o pop-up e devolve **429 `provider_quota`** (o gateway deve tratar como cota esgotada e usar outra ponte).
+- Pontes novas usam a imagem única `universal/` (um container por provedor, adaptador em `universal/src/sites/<provedor>.js`).
 
 ## Regra de roteamento adotada
 
