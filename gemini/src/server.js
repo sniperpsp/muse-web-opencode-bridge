@@ -175,6 +175,7 @@ function restartChromium(reason) {
 // Ociosa (sem chamada, fila ou envio pendente), a aba é recarregada quando passa do limite de heap ou de idade; se nem responde, o Chromium é reiniciado.
 const RECYCLE_HEAP_MB = Number(process.env.MUSE_RECYCLE_HEAP_MB || 700);
 const RECYCLE_AGE_MS = Number(process.env.MUSE_RECYCLE_AGE_MS || 2 * 3600 * 1000);
+const SEND_CONFIRM_MS = Number(process.env.MUSE_SEND_CONFIRM_MS || 25000);
 const WATCHDOG_MS = Number(process.env.MUSE_WATCHDOG_MS || 5 * 60 * 1000);
 let pageLoadedAt = Date.now();
 async function recycleIdlePage() {
@@ -656,7 +657,22 @@ async function submitText(prompt, files, requestHash, signal, attempt = 0) {
         throw new Error("Escrevi a mensagem, mas não encontrei o botão de envio do Gemini. Configure MUSE_SEND_SELECTOR para o botão desta página.");
       }
     }
-    await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH.test(url.pathname), { timeout: 60000 }), signal, "Confirmar o envio ao Gemini", 65000);
+    try {
+      await museBrowserOperation(() => musePage.waitForURL((url) => CONVERSATION_PATH.test(url.pathname), { timeout: SEND_CONFIRM_MS }), signal, "Confirmar o envio ao Gemini", SEND_CONFIRM_MS + 5000);
+    } catch (error) {
+      if (signal.aborted || (error.name !== "TimeoutError" && !/Timeout/i.test(String(error.message)))) throw error;
+      // O Gemini às vezes fica "pensando" sem começar e a URL nunca vira /app/<id>; a aba presa derrubava todos os envios seguintes (409).
+      // Para a geração, volta à página inicial, solta o pendente e deixa submitWithRecovery reenviar sozinho.
+      console.warn(JSON.stringify({ event: "muse_submission", request: requestHash.slice(0, 12), phase: "send_unconfirmed", waitedMs: SEND_CONFIRM_MS }));
+      await museBrowserOperation(async () => {
+        const stop = musePage.locator(STREAMING_SELECTOR).first();
+        if (await stop.count()) await stop.click({ timeout: 3000 }).catch(() => {});
+        await musePage.goto(MUSE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+      }, signal, "Recarregar o Gemini depois de envio sem confirmação", 70000);
+      conversation.pendingSubmission = undefined;
+      await saveConversations();
+      throw Object.assign(new Error("O Gemini não confirmou o envio a tempo; a ponte recarregou a página e reenvia."), { status: 503, code: "muse_delivery_failed", retryable: true });
+    }
     await rememberThread();
     conversation.pendingSubmission.phase = "waiting";
     await saveConversations();
