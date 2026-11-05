@@ -77,3 +77,11 @@ Se a conversa não cabe em `maxChars` da ponte, o gateway compacta o histórico 
 longos das mensagens antigas (as últimas 8 e a primeira, que é a tarefa, ficam intactas); 2) se ainda não couber, descarta as mensagens mais antigas e
 remove `tool_result` órfão, inserindo um aviso de que mensagens foram omitidas. O log mostra "histórico compactado para <ponte>: antes -> depois".
 Teste: histórico de 709k chars virou 152k e o modelo ainda respondeu o código da 1ª mensagem. No OpenCode, `limit.context` do GT Auto é 80000 (tokens), para ele também compactar antes.
+
+## Guardrails (validação da resposta)
+
+Toda resposta da ponte passa por `checkResponse` antes de ir ao cliente:
+- **Conserta sozinho:** lixo de bloco de código no início do texto (`json` + numeração de linhas), chamada de ferramenta escrita como texto, apelido de ferramenta (`shell` → `bash`), `cmd`/`script` no lugar de `command`, e `description` obrigatório que faltou (derivado do comando).
+- **Detecta problema:** resposta vazia, ferramenta inexistente, argumentos que não são JSON, campos obrigatórios faltando (pelo `input_schema` do cliente) e JSON de ferramenta truncado/quebrado.
+- **Reenvia:** com problema, manda de novo (conversa nova na ponte) com um aviso corretivo que lista os nomes de ferramenta válidos, até `GATEWAY_FIX_RETRIES` vezes (padrão 2). Se persistir, passa para a próxima ponte **sem** colocar a atual em pausa (o defeito é do modelo, não da ponte). Se todas falharem, devolve erro claro ao cliente, que tenta de novo.
+O log registra cada caso: "resposta inválida de <ponte> (<motivo>); reenviando n/2".

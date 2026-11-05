@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain, salvageToolCall, compactMessages } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain, salvageToolCall, compactMessages, checkResponse } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -80,5 +80,20 @@ assert.equal(salvageToolCall(leak, ["grep", "Read"]), null, "sem bash declarado 
 const withPre = salvageToolCall('Vou rodar o teste.\n{"name":"shell","arguments":{"cmd":"ls"}}', names);
 assert.equal(withPre.pre, "Vou rodar o teste.");
 assert.deepEqual(withPre.input, { command: "ls" });
+const gtools = [{ name: "bash", input_schema: { type: "object", required: ["command", "description"] } }, { name: "read", input_schema: { type: "object", required: ["filePath"] } }];
+const R = (content, tool_calls) => ({ choices: [{ message: { content, tool_calls }, finish_reason: "stop" }] });
+let c1 = checkResponse(R('json\n1\n2\n3\n{\n"type":"tool_call","name":"shell","arguments":{"command":"ls -la"}\n}'), gtools);
+assert.equal(c1.problem, null);
+assert.equal(c1.data.choices[0].message.tool_calls[0].function.name, "bash");
+assert.equal(JSON.parse(c1.data.choices[0].message.tool_calls[0].function.arguments).description, "ls -la");
+assert.match(checkResponse(R(null, [{ id: "1", function: { name: "inventada", arguments: "{}" } }]), gtools).problem, /desconhecida/);
+assert.match(checkResponse(R(null, [{ id: "1", function: { name: "read", arguments: "{}" } }]), gtools).problem, /filePath/);
+assert.match(checkResponse(R(null, [{ id: "1", function: { name: "read", arguments: "{quebrado" } }]), gtools).problem, /JSON/);
+assert.match(checkResponse(R("   "), gtools).problem, /vazia/);
+assert.match(checkResponse(R('{"type":"tool_call","name":"bash","argum'), gtools).problem, /inválido/);
+assert.equal(checkResponse(R("Tudo certo, terminei."), gtools).problem, null);
+assert.equal(checkResponse(R('{"type":"final","text":"ok"}'), gtools).problem, null);
+assert.equal(checkResponse(R("json\n1\n2\n3\nTexto depois do cabeçalho"), []).data.choices[0].message.content, "Texto depois do cabeçalho");
+assert.equal(checkResponse(R(null, [{ id: "1", function: { name: "read", arguments: '{"filePath":"a"}' } }]), gtools).problem, null);
 assert.ok(isWarming("", "muse_browser_reconnecting") && isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
 console.log("ok");

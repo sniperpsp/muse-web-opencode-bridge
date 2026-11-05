@@ -61,6 +61,7 @@ export function orderChain(chain, load = () => 0, isUp = () => true, cooling = (
   // as que estão em pausa por falha recente ficam por último (só entram se as demais não resolverem)
   return [...sorted.filter((b) => !cooling(b)), ...sorted.filter((b) => cooling(b))];
 }
+const FIX_RETRIES = Number(process.env.GATEWAY_FIX_RETRIES || 2);
 const COOLDOWN_MS = Number(process.env.GATEWAY_COOLDOWN_MS || 60000);
 const downUntil = new Map();
 
@@ -273,6 +274,50 @@ export function salvageToolCall(text, toolNames = []) {
   if (byType) { const { type, ...rest } = o; return done(byType, rest); }
   return null;
 }
+// ---- Guardrails: valida a resposta da ponte antes de devolver ao cliente ----
+// Conserta o que dá (lixo de bloco de código, chamada de ferramenta escrita como texto, apelido de ferramenta, campo "description" faltando)
+// e devolve { data, problem }: com "problem" o gateway reenvia com um aviso corretivo e, se persistir, troca de ponte.
+const NOISE_RE = /^\s*(?:json|javascript|js|bash|sh|text|python)\s*\n(?:\s*\d+\s*\n){2,}/i;
+const LEAK_RE = /"type"\s*:\s*"(?:tool_call|tool_use|final)"|"(?:arguments|parameters)"\s*:\s*[{"]|^\s*\{\s*"(?:name|tool)"\s*:/;
+export function checkResponse(res, tools = []) {
+  const data = JSON.parse(JSON.stringify(res || {}));
+  const msg = data.choices?.[0]?.message;
+  if (!msg) return { data, problem: "resposta sem mensagem" };
+  const names = tools.map((t) => t.name);
+  const schema = (n) => tools.find((t) => t.name === n)?.input_schema || {};
+  if (typeof msg.content === "string") msg.content = msg.content.replace(NOISE_RE, "");
+  if (!msg.tool_calls?.length && msg.content && names.length) {
+    const sv = salvageToolCall(msg.content, names);
+    if (sv) {
+      msg.tool_calls = [{ id: `call_${randomBytes(8).toString("hex")}`, type: "function", function: { name: sv.name, arguments: JSON.stringify(sv.input) } }];
+      msg.content = sv.pre || null;
+    }
+  }
+  if (msg.tool_calls?.length) {
+    for (const c of msg.tool_calls) {
+      const raw = c.function?.name;
+      const k = String(raw).toLowerCase();
+      const real = names.find((n) => n.toLowerCase() === k) || (TOOL_ALIAS[k] && names.find((n) => n.toLowerCase() === TOOL_ALIAS[k]));
+      if (names.length && !real) return { data, problem: `ferramenta desconhecida "${raw}"` };
+      if (real) c.function.name = real;
+      let args;
+      try { args = typeof c.function.arguments === "string" ? JSON.parse(c.function.arguments || "{}") : c.function.arguments || {}; } catch { return { data, problem: `argumentos de ${c.function.name} não são JSON válido` }; }
+      if (args === null || typeof args !== "object" || Array.isArray(args)) return { data, problem: `argumentos de ${c.function.name} inválidos` };
+      if (c.function.name.toLowerCase() === "bash" && args.command === undefined && (args.cmd ?? args.script) !== undefined) { args.command = args.cmd ?? args.script; delete args.cmd; delete args.script; }
+      const missing = (schema(c.function.name).required || []).filter((f) => args[f] === undefined || args[f] === null || args[f] === "");
+      for (const f of [...missing]) {
+        if (f === "description" && typeof args.command === "string") { args.description = args.command.slice(0, 60); missing.splice(missing.indexOf(f), 1); }
+      }
+      if (missing.length) return { data, problem: `${c.function.name} sem os campos obrigatórios: ${missing.join(", ")}` };
+      c.function.arguments = JSON.stringify(args);
+    }
+    return { data, problem: null };
+  }
+  const text = String(msg.content || "").trim();
+  if (!text) return { data, problem: "resposta vazia" };
+  if (unwrapFinal(text) === text && LEAK_RE.test(text)) return { data, problem: "chamada de ferramenta em formato inválido" };
+  return { data, problem: null };
+}
 export function fromOpenAI(res, model, toolNames = []) {
   const choice = res.choices?.[0] || {};
   const msg = choice.message || {};
@@ -356,13 +401,18 @@ async function handleMessages(req, res) {
       if ((inflight.get(b.name) || 0) >= (b.concurrency ?? 1) && order.slice(i + 1).some((o) => (inflight.get(o.name) || 0) < (o.concurrency ?? 1))) continue;
       // deixa ~40k para a conversa; mínimo de 20k para sistema + ferramentas
       const budget = Math.min(BUDGET, Math.max(20000, b.maxChars - 40000));
-      let payload = toOpenAI(body, budget, b.model);
-      if (JSON.stringify(payload).length > b.maxChars) {
-        const fixed = JSON.stringify(toOpenAI({ ...body, messages: [{ role: "user", content: "." }] }, budget, b.model)).length;
-        const before = JSON.stringify(payload).length;
-        payload = toOpenAI({ ...body, messages: compactMessages(body.messages, Math.max(20000, b.maxChars - fixed - 10000)) }, budget, b.model);
-        console.log(`[${new Date().toISOString()}] histórico compactado para ${b.name}: ${before} -> ${JSON.stringify(payload).length} chars`);
-      }
+      const build = (extra) => {
+        const base = extra ? { ...body, messages: [...(body.messages || []), extra] } : body;
+        let pl = toOpenAI(base, budget, b.model);
+        if (JSON.stringify(pl).length > b.maxChars) {
+          const fixed = JSON.stringify(toOpenAI({ ...base, messages: [{ role: "user", content: "." }] }, budget, b.model)).length;
+          const before = JSON.stringify(pl).length;
+          pl = toOpenAI({ ...base, messages: compactMessages(base.messages, Math.max(20000, b.maxChars - fixed - 10000)) }, budget, b.model);
+          console.log(`[${new Date().toISOString()}] histórico compactado para ${b.name}: ${before} -> ${JSON.stringify(pl).length} chars`);
+        }
+        return pl;
+      };
+      let payload = build();
       const size = JSON.stringify(payload).length;
       if (size > b.maxChars) { sizeErr = sizeErr || new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
       console.log(`[${new Date().toISOString()}] /v1/messages -> ${b.name}: ${size} chars, ${payload.tools?.length || 0} ferramentas`);
@@ -370,27 +420,41 @@ async function handleMessages(req, res) {
         inflight.set(b.name, (inflight.get(b.name) || 0) + 1);
         const t0 = Date.now();
         await ensureUp(b);
-        let up, data;
-        for (let attempt = 0; ; attempt++) {
-          up = await fetch(`${b.url.replace(/\/$/, "")}/chat/completions`, {
-            method: "POST", signal: abort.signal,
-            headers: { "content-type": "application/json", authorization: `Bearer ${b.key}`, "x-opencode-session-id": sessionId(body) },
-            body: JSON.stringify(payload),
-          });
-          data = await up.json().catch(() => ({}));
-          // ponte recém-ligada ainda abrindo o navegador: espera e repete na mesma ponte
-          if (up.status === 503 && attempt < 8 && (isWarming(data?.error?.message, data?.error?.code) || Date.now() - (startedAt.get(b.name) || 0) < 90000)) { await new Promise((r2) => setTimeout(r2, 8000)); continue; }
-          break;
+        const post = async (pl, sid) => {
+          let up, data;
+          for (let attempt = 0; ; attempt++) {
+            up = await fetch(`${b.url.replace(/\/$/, "")}/chat/completions`, {
+              method: "POST", signal: abort.signal,
+              headers: { "content-type": "application/json", authorization: `Bearer ${b.key}`, "x-opencode-session-id": sid },
+              body: JSON.stringify(pl),
+            });
+            data = await up.json().catch(() => ({}));
+            // ponte recém-ligada ainda abrindo o navegador: espera e repete na mesma ponte
+            if (up.status === 503 && attempt < 8 && (isWarming(data?.error?.message, data?.error?.code) || Date.now() - (startedAt.get(b.name) || 0) < 90000)) { await new Promise((r2) => setTimeout(r2, 8000)); continue; }
+            break;
+          }
+          if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
+          return data;
+        };
+        let data = await post(payload, sessionId(body));
+        let chk = checkResponse(data, body.tools || []);
+        // resposta inválida (vazia, ferramenta inexistente, JSON quebrado...): reenvia com aviso, numa conversa nova da ponte, até FIX_RETRIES vezes
+        for (let n = 1; chk.problem && n <= FIX_RETRIES; n++) {
+          console.log(`[${new Date().toISOString()}] resposta inválida de ${b.name} (${chk.problem}); reenviando ${n}/${FIX_RETRIES}`);
+          const nomes = (body.tools || []).map((t) => t.name).slice(0, 30).join(", ");
+          const aviso = { role: "user", content: `[Aviso automático do gateway] Sua resposta anterior não pôde ser usada: ${chk.problem}. Responda de novo agora. Se precisa usar uma ferramenta, devolva SOMENTE a chamada de ferramenta no formato pedido, com um destes nomes exatos${nomes ? ` (${nomes})` : ""} e todos os campos obrigatórios. Se terminou, devolva SOMENTE o texto final.` };
+          data = await post(build(aviso), `${sessionId(body)}-r${n}`);
+          chk = checkResponse(data, body.tools || []);
         }
-        if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
-        message = fromOpenAI(data, model, (payload.tools || []).map((t) => t.function?.name).filter(Boolean));
+        if (chk.problem) throw Object.assign(new Error(`resposta inválida de ${b.name}: ${chk.problem}`), { noCooldown: true });
+        message = fromOpenAI(chk.data, model, (payload.tools || []).map((t) => t.function?.name).filter(Boolean));
         console.log(`[${new Date().toISOString()}] ok ${b.name} em ${Math.round((Date.now() - t0) / 1000)}s`);
         break;
       } catch (e) {
         if (abort.signal.aborted) throw e; // cliente saiu ou estourou o tempo total
         console.log(`[${new Date().toISOString()}] ${b.name} falhou: ${e.message.slice(0, 120)}`);
-        // ponte fora do ar (reinício/queda): pausa curta; falha da página/site: pausa longa
-        downUntil.set(b.name, Date.now() + (/fetch failed|ECONNREFUSED|socket hang up/i.test(`${e.message} ${e.cause?.code || ""}`) ? 5000 : COOLDOWN_MS));
+        // ponte fora do ar (reinício/queda): pausa curta; falha da página/site: pausa longa; resposta inválida do modelo: sem pausa
+        if (!e.noCooldown) downUntil.set(b.name, Date.now() + (/fetch failed|ECONNREFUSED|socket hang up/i.test(`${e.message} ${e.cause?.code || ""}`) ? 5000 : COOLDOWN_MS));
         last = e;
       } finally { inflight.set(b.name, Math.max(0, (inflight.get(b.name) || 1) - 1)); lastUse.set(b.name, Date.now()); }
     }
