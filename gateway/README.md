@@ -64,3 +64,9 @@ Na cadeia, o nome do grupo vale para a ponte e todas as réplicas. Cada demanda 
 `concurrency` (padrão 1) limita pedidos simultâneos por ponte (o Muse tem 2 abas, então 2). Se todas do grupo estão cheias, passa para o próximo grupo da cadeia.
 Pontes em pausa por falha recente vão para o fim da fila (não são descartadas), e queda de conexão (reinício) pausa só 5 s. Se nada comporta o prompt, o erro devolvido é o da última ponte tentada, não o de tamanho.
 Réplicas atuais: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–1,8 GB), Gemini ×1, Muse 1 container com 2 abas.
+
+## Chamada de ferramenta escrita como texto
+
+Se a ponte devolve como texto algo como `{"type":"grep","pattern":"x"}` ou `{"name":"grep","arguments":{...}}`, o gateway converte em `tool_use`
+**somente se o nome for de uma ferramenta que o cliente declarou** (`salvageToolCall`); nos demais casos segue como texto. Cada recuperação aparece no log
+("chamada de ferramenta recuperada do texto"). Sem isso o cliente trata como resposta final e o turno termina sem o trabalho feito.

@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain, salvageToolCall } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -51,5 +51,16 @@ const ld = { ds: 1, ds2: 0, ds3: 0, muse: 0 };
 assert.deepEqual(chainFor("x", pool, { tiers: [{ chain: ["deepseek", "muse"] }] }).map((b) => b.name), ["ds", "ds2", "ds3", "muse"]);
 assert.deepEqual(orderChain(pool, (b) => ld[b.name], (b) => b.name !== "ds2").map((b) => b.name), ["ds3", "ds2", "ds", "muse"]);
 assert.deepEqual(orderChain(pool, () => 0, () => true, (b) => b.name === "ds").map((b) => b.name), ["ds2", "ds3", "muse", "ds"]);
+const names = ["grep", "Read", "bash"];
+assert.deepEqual(salvageToolCall('{"type":"grep","pattern":"A|B","limit":100}', names), { name: "grep", input: { pattern: "A|B", limit: 100 } });
+assert.deepEqual(salvageToolCall('{"type":"tool_call","name":"read","arguments":{"path":"a.lua"}}', names), { name: "Read", input: { path: "a.lua" } });
+assert.deepEqual(salvageToolCall('```json\n{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}\n```', names), { name: "bash", input: { command: "ls" } });
+assert.equal(salvageToolCall('{"type":"final","text":"oi"}', names), null);
+assert.equal(salvageToolCall('{"type":"outra","x":1}', names), null);
+assert.equal(salvageToolCall("texto normal", names), null);
+assert.equal(salvageToolCall('{"type":"grep","pattern":"x"}', []), null);
+const fx = fromOpenAI({ choices: [{ message: { content: '{"type":"grep","pattern":"x"}' }, finish_reason: "stop" }] }, "m", names);
+assert.equal(fx.stop_reason, "tool_use");
+assert.equal(fx.content[0].type, "tool_use");
 assert.ok(isWarming("", "muse_browser_reconnecting") && isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
 console.log("ok");

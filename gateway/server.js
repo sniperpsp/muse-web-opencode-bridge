@@ -197,18 +197,41 @@ export function unwrapFinal(t) {
 }
 
 // ---- OpenAI -> Anthropic -------------------------------------------------
-export function fromOpenAI(res, model) {
+// O modelo web às vezes escreve a chamada de ferramenta como texto em formato próprio, ex.: {"type":"grep","pattern":"x"} ou
+// {"name":"grep","arguments":{...}}. Só vira tool_use se o nome bater com uma ferramenta que o cliente declarou; senão segue como texto.
+export function salvageToolCall(text, toolNames = []) {
+  if (!toolNames.length) return null;
+  let s = String(text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  let o;
+  try { o = JSON.parse(s); } catch { return null; }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  const find = (n) => toolNames.find((t) => t.toLowerCase() === String(n).toLowerCase());
+  const named = find(o.name ?? o.tool ?? o.function);
+  if (named && (o.arguments || o.input || o.args || o.parameters) && (o.type === undefined || /tool|call|use/i.test(String(o.type)))) {
+    let a = o.arguments ?? o.input ?? o.args ?? o.parameters;
+    if (typeof a === "string") { try { a = JSON.parse(a); } catch { return null; } }
+    return { name: named, input: a && typeof a === "object" ? a : {} };
+  }
+  const byType = typeof o.type === "string" && o.type !== "final" ? find(o.type) : undefined;
+  if (byType) { const { type, ...rest } = o; return { name: byType, input: rest }; }
+  return null;
+}
+export function fromOpenAI(res, model, toolNames = []) {
   const choice = res.choices?.[0] || {};
   const msg = choice.message || {};
   const content = [];
-  if (msg.content) content.push({ type: "text", text: unwrapFinal(msg.content) });
+  const salvaged = !msg.tool_calls?.length && msg.content ? salvageToolCall(msg.content, toolNames) : null;
+  if (salvaged) {
+    console.log(`[${new Date().toISOString()}] chamada de ferramenta recuperada do texto: ${salvaged.name}`);
+    content.push({ type: "tool_use", id: `toolu_${randomBytes(10).toString("hex")}`, name: salvaged.name, input: salvaged.input });
+  } else if (msg.content) content.push({ type: "text", text: unwrapFinal(msg.content) });
   for (const c of msg.tool_calls || []) {
     let input = {};
     try { input = JSON.parse(c.function?.arguments || "{}"); } catch { /* argumentos inválidos: envia vazio */ }
     content.push({ type: "tool_use", id: c.id || `toolu_${randomBytes(10).toString("hex")}`, name: c.function?.name, input });
   }
   if (!content.length) content.push({ type: "text", text: "" });
-  const stop = msg.tool_calls?.length ? "tool_use" : choice.finish_reason === "length" ? "max_tokens" : "end_turn";
+  const stop = msg.tool_calls?.length || salvaged ? "tool_use" : choice.finish_reason === "length" ? "max_tokens" : "end_turn";
   return {
     id: `msg_${randomBytes(12).toString("hex")}`, type: "message", role: "assistant", model, content,
     stop_reason: stop, stop_sequence: null,
@@ -295,7 +318,7 @@ async function handleMessages(req, res) {
           break;
         }
         if (!up.ok) throw Object.assign(new Error(data?.error?.message || `${b.name} respondeu ${up.status}`), { status: up.status });
-        message = fromOpenAI(data, model);
+        message = fromOpenAI(data, model, (payload.tools || []).map((t) => t.function?.name).filter(Boolean));
         console.log(`[${new Date().toISOString()}] ok ${b.name} em ${Math.round((Date.now() - t0) / 1000)}s`);
         break;
       } catch (e) {
