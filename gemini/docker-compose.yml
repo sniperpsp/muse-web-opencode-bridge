@@ -9,6 +9,7 @@ services:
       MUSE_MAX_PROMPT_CHARS: ${MUSE_MAX_PROMPT_CHARS:-100000}
       MUSE_URL: https://gemini.google.com/app
       MUSE_VNC_URL: http://127.0.0.1:4348/vnc.html?autoconnect=1&resize=scale&host=127.0.0.1&port=4348&path=websockify
+      MUSE_SEND_CONFIRM_MS: ${MUSE_SEND_CONFIRM_MS:-60000}
       MUSE_REQUEST_TIMEOUT_MS: ${MUSE_REQUEST_TIMEOUT_MS:-420000}
     image: gemini-opencode-bridge:local
     container_name: gemini-opencode-bridge
