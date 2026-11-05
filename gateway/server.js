@@ -147,6 +147,39 @@ function fitPrompt(body, budget = BUDGET) {
 }
 
 // ---- Anthropic -> OpenAI -------------------------------------------------
+// Histórico grande demais para a ponte: 1) corta resultados de ferramenta e textos longos das mensagens antigas (mantém as últimas KEEP intactas);
+// 2) se ainda não couber, descarta as mensagens mais antigas (preserva a 1ª, que é a tarefa) e tira tool_result órfão.
+const KEEP = 8;
+const clipStr = (t, n) => (String(t).length > n ? `${String(t).slice(0, n)}\n[... ${String(t).length - n} chars omitidos pelo gateway ...]` : t);
+function clipMessage(m, n) {
+  if (typeof m.content === "string") return { ...m, content: clipStr(m.content, n * 3) };
+  if (!Array.isArray(m.content)) return m;
+  return { ...m, content: m.content.map((b) => {
+    if (b.type === "tool_result") return { ...b, content: typeof b.content === "string" ? clipStr(b.content, n) : Array.isArray(b.content) ? b.content.map((c) => (c.type === "text" ? { ...c, text: clipStr(c.text, n) } : c)) : b.content };
+    if (b.type === "text") return { ...b, text: clipStr(b.text, n * 3) };
+    return b;
+  }) };
+}
+export function compactMessages(messages = [], limit = Infinity) {
+  const size = (ms) => JSON.stringify(ms).length;
+  if (size(messages) <= limit) return messages;
+  const head = Math.max(0, messages.length - KEEP);
+  for (const n of [2000, 800, 300]) {
+    const ms = messages.map((m, i) => (i === 0 || i >= head ? m : clipMessage(m, n)));
+    if (size(ms) <= limit) return ms;
+  }
+  let ms = messages.map((m, i) => (i === 0 || i >= head ? m : clipMessage(m, 300)));
+  let drop = 1;
+  const build = () => {
+    const kept = [ms[0], ...ms.slice(1 + drop)];
+    const ids = new Set(kept.flatMap((m) => (Array.isArray(m.content) ? m.content.filter((b) => b.type === "tool_use").map((b) => b.id) : [])));
+    return kept.map((m) => (Array.isArray(m.content) ? { ...m, content: m.content.filter((b) => b.type !== "tool_result" || ids.has(b.tool_use_id)) } : m)).filter((m) => typeof m.content === "string" || m.content?.length);
+  };
+  while (drop < ms.length - 2 && size(build()) > limit) drop++;
+  const out = build();
+  out.splice(1, 0, { role: "user", content: `(O gateway omitiu as ${drop} mensagens mais antigas desta sessão para caber no limite da ponte; continue a partir das mensagens abaixo.)` });
+  return out;
+}
 export function toOpenAI(body, budget = BUDGET, model = UPSTREAM_MODEL) {
   const messages = [];
   const { system, tools } = fitPrompt(body, budget);
@@ -297,7 +330,14 @@ async function handleMessages(req, res) {
       // cada ponte tem uma aba só: se já há pedidos demais nela e ainda há outra opção, passa para a próxima
       if ((inflight.get(b.name) || 0) >= (b.concurrency ?? 1) && order.slice(i + 1).some((o) => (inflight.get(o.name) || 0) < (o.concurrency ?? 1))) continue;
       // deixa ~40k para a conversa; mínimo de 20k para sistema + ferramentas
-      const payload = toOpenAI(body, Math.min(BUDGET, Math.max(20000, b.maxChars - 40000)), b.model);
+      const budget = Math.min(BUDGET, Math.max(20000, b.maxChars - 40000));
+      let payload = toOpenAI(body, budget, b.model);
+      if (JSON.stringify(payload).length > b.maxChars) {
+        const fixed = JSON.stringify(toOpenAI({ ...body, messages: [{ role: "user", content: "." }] }, budget, b.model)).length;
+        const before = JSON.stringify(payload).length;
+        payload = toOpenAI({ ...body, messages: compactMessages(body.messages, Math.max(20000, b.maxChars - fixed - 10000)) }, budget, b.model);
+        console.log(`[${new Date().toISOString()}] histórico compactado para ${b.name}: ${before} -> ${JSON.stringify(payload).length} chars`);
+      }
       const size = JSON.stringify(payload).length;
       if (size > b.maxChars) { sizeErr = sizeErr || new Error(`prompt de ${size} chars não cabe em ${b.name} (${b.maxChars})`); continue; }
       console.log(`[${new Date().toISOString()}] /v1/messages -> ${b.name}: ${size} chars, ${payload.tools?.length || 0} ferramentas`);

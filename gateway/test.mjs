@@ -1,7 +1,7 @@
 // Teste de tradução (sem rede): node gateway/test.mjs
 process.env.UPSTREAM_KEY = "x";
 import assert from "node:assert/strict";
-const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain, salvageToolCall } = await import("./server.js");
+const { toOpenAI, fromOpenAI, unwrapFinal, chainFor, isWarming, demandOf, orderChain, salvageToolCall, compactMessages } = await import("./server.js");
 
 const req = toOpenAI({
   system: [{ type: "text", text: "sys" }],
@@ -62,5 +62,17 @@ assert.equal(salvageToolCall('{"type":"grep","pattern":"x"}', []), null);
 const fx = fromOpenAI({ choices: [{ message: { content: '{"type":"grep","pattern":"x"}' }, finish_reason: "stop" }] }, "m", names);
 assert.equal(fx.stop_reason, "tool_use");
 assert.equal(fx.content[0].type, "tool_use");
+const hist = [{ role: "user", content: "TAREFA INICIAL" }];
+for (let i = 0; i < 40; i++) {
+  hist.push({ role: "assistant", content: [{ type: "tool_use", id: `t${i}`, name: "grep", input: { p: i } }] });
+  hist.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: "x".repeat(20000) }] });
+}
+const cm = compactMessages(hist, 60000);
+assert.ok(JSON.stringify(cm).length <= 60000, "compactou");
+assert.equal(cm[0].content, "TAREFA INICIAL");
+assert.deepEqual(cm.at(-1), hist.at(-1));
+const usedIds = new Set(cm.flatMap((m) => (Array.isArray(m.content) ? m.content.filter((b) => b.type === "tool_use").map((b) => b.id) : [])));
+assert.ok(cm.every((m) => !Array.isArray(m.content) || m.content.every((b) => b.type !== "tool_result" || usedIds.has(b.tool_use_id))), "sem tool_result órfão");
+assert.equal(compactMessages([{ role: "user", content: "oi" }], 1000).length, 1);
 assert.ok(isWarming("", "muse_browser_reconnecting") && isWarming("Chromium ainda está reconectando") && isWarming("A página ainda não ficou pronta") && !isWarming("prompt grande demais"));
 console.log("ok");

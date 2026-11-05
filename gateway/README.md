@@ -70,3 +70,10 @@ Réplicas atuais: DeepSeek ×3 (leve, ~360 MB cada), ChatGPT ×2 (pesado, 1,3–
 Se a ponte devolve como texto algo como `{"type":"grep","pattern":"x"}` ou `{"name":"grep","arguments":{...}}`, o gateway converte em `tool_use`
 **somente se o nome for de uma ferramenta que o cliente declarou** (`salvageToolCall`); nos demais casos segue como texto. Cada recuperação aparece no log
 ("chamada de ferramenta recuperada do texto"). Sem isso o cliente trata como resposta final e o turno termina sem o trabalho feito.
+
+## Histórico grande (compactação)
+
+Se a conversa não cabe em `maxChars` da ponte, o gateway compacta o histórico (`compactMessages`) antes de recusar: 1) corta resultados de ferramenta e textos
+longos das mensagens antigas (as últimas 8 e a primeira, que é a tarefa, ficam intactas); 2) se ainda não couber, descarta as mensagens mais antigas e
+remove `tool_result` órfão, inserindo um aviso de que mensagens foram omitidas. O log mostra "histórico compactado para <ponte>: antes -> depois".
+Teste: histórico de 709k chars virou 152k e o modelo ainda respondeu o código da 1ª mensagem. No OpenCode, `limit.context` do GT Auto é 80000 (tokens), para ele também compactar antes.
