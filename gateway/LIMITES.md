@@ -38,12 +38,16 @@ Medido em 2026-11-05, cada tamanho em conversa nova.
 | | | 12k | perdeu o código do meio | 6 s | |
 | | | 30k, 100k | **recusado pelo site**: campo de mensagem limitado a **16.000 caracteres** ("Please try a shorter message") | 18 s | |
 
+| **Gemini** (após desligar animações) | gemini-web | 30k | leu os 3 | 15 s | **100k** |
+| | | 100k | leu os 3 | 47 s | |
+| | | 150k, 250k, 450k | **falhou**: o site corta o final da mensagem colada | 22–101 s | |
+
 ## Conclusões
 
 - **DeepSeek**: o mais rápido e o que mais aguenta. Confiável até **~475k** caracteres; 500k é limítrofe; de 600k em diante falha. Acima de ~600k o gargalo é a própria ponte (colar no campo, `browser-operation` de 15 s), não só o site.
 - **Muse**: confiável até **480k** (o teto é do container, 500k). Segundo mais capaz, mas estável só depois do primeiro envio.
 - **ChatGPT**: leu até **475k**; **500k é recusado pelo próprio site**, de forma reproduzível. Tempo quase constante (36–48 s) de 5k a 475k, ou seja, o custo é a latência fixa do site, não o tamanho. É o mais lento para textos pequenos.
-- **Gemini (atualização)**: a travada vinha da **animação do fundo** (Chromium sem GPU a ~220% de CPU). Com as animações desligadas (CSS injetado) e `MUSE_SEND_CONFIRM_MS=60000`, responde "pong" em ~28 s. Lento como o ChatGPT, mas funciona; prompts grandes ainda não remedidos. Texto antigo: **fora da rota (decisão 2026-11-05).** Funciona na 1ª mensagem depois de reiniciar, depois trava. Chromium sem GPU chega a 313% de CPU e 2,4 GB; só 340 MB ao subir. A ponte agora reenvia sozinha se a URL não confirmar em 25 s (`MUSE_SEND_CONFIRM_MS`), mas não resolveu. Ideias: abrir aba nova a cada pedido; bloquear imagens/fontes; Firefox.
+- **Gemini (atualização)**: a travada vinha da **animação do fundo** (Chromium sem GPU a ~220% de CPU). Com as animações desligadas (CSS injetado) e `MUSE_SEND_CONFIRM_MS=60000`, responde "pong" em ~28 s. Lento como o ChatGPT, mas funciona; medido depois: confiável até **100k** (15–47 s); acima de 150k o site corta o fim da mensagem. Teto do gateway/ponte: 100k. Texto antigo: **fora da rota (decisão 2026-11-05).** Funciona na 1ª mensagem depois de reiniciar, depois trava. Chromium sem GPU chega a 313% de CPU e 2,4 GB; só 340 MB ao subir. A ponte agora reenvia sozinha se a URL não confirmar em 25 s (`MUSE_SEND_CONFIRM_MS`), mas não resolveu. Ideias: abrir aba nova a cada pedido; bloquear imagens/fontes; Firefox.
 
 O que importa para o Claude Code: o prompt de sistema + ferramentas já ocupa ~100k a 230k, e o histórico cresce a cada turno.
 Por isso o tamanho útil de conversa é bem menor que o limite bruto.
