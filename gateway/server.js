@@ -22,6 +22,7 @@ const BUDGET = Number(process.env.GATEWAY_BUDGET || 55000);
 const CORE_TOOLS = new Set((process.env.GATEWAY_CORE_TOOLS || "Read,Write,Edit,MultiEdit,Bash,Glob,Grep,WebFetch,WebSearch,TodoWrite,Task,Agent,NotebookEdit,Skill").split(","));
 // Níveis tentados em ordem até caber no BUDGET.
 const LEVELS = [
+  { sys: Infinity, tool: Infinity, prop: Infinity, mcp: true }, // sem cortes: só serve se couber no BUDGET
   { sys: 15000, tool: 300, prop: 100, mcp: true },
   { sys: 10000, tool: 150, prop: 50, mcp: true },
   { sys: 8000, tool: 120, prop: 40, mcp: false },
