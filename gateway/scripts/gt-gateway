@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Roteamento por demanda: conversa pequena (<=6000 chars) tenta Mistral/Qwen antes; maior vai para DeepSeek e as demais.
 # Sobe o gateway (porta 4350) se ainda não estiver de pé. Usado por gt-claude e gt-opencode.
+# GT_PROFILE=nvidia: gateway "GT NVIDIA" (porta 4351): modelos gratuitos da NVIDIA primeiro, pontes web como reserva.
+#   Chave em $NVIDIA_API_KEY ou ~/.config/gateway/nvidia.key ; modelos em ~/.config/gateway/nvidia-models.json (opcional).
 GW_DIR="${GT_REPO:-/mnt/e/muse-opencode-bridge}/gateway"
 CFG=~/.config/gateway
 mkdir -p $CFG
+export GT_PROFILE="${GT_PROFILE:-auto}"
+PORT=4350; LOG=$CFG/gateway.log
+if [ "$GT_PROFILE" = nvidia ]; then
+  PORT=4351; LOG=$CFG/gateway-nvidia.log
+  export NVIDIA_API_KEY="${NVIDIA_API_KEY:-$(cat $CFG/nvidia.key 2>/dev/null)}"
+  [ -n "$NVIDIA_API_KEY" ] || { echo "falta a chave da NVIDIA: coloque a nvapi-... em $CFG/nvidia.key (chmod 600)" >&2; exit 1; }
+fi
 [ -s $CFG/key ] || { umask 077; openssl rand -hex 24 > $CFG/key; echo "chave do gateway criada em $CFG/key" >&2; }
-if ! curl -fs -m 2 http://127.0.0.1:4350/health >/dev/null; then
+if ! curl -fs -m 2 http://127.0.0.1:$PORT/health >/dev/null; then
   BACKENDS=$(python3 - <<'PY'
 import re,json,os,subprocess
 t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
@@ -13,8 +22,15 @@ prov=json.loads(t)['provider']
 # (provedor, limite de caracteres aceito pela ponte)
 order=[('deepseek',450000,'deepseek-opencode-bridge'),('muse',450000,'muse-opencode-bridge'),('chatgpt',450000,'chatgpt-opencode-bridge'),('gemini',100000,'gemini-opencode-bridge')]  # gemini: lento, por último (ver LIMITES.md)
 out=[]
+NV=[]
+if os.environ.get('GT_PROFILE')=='nvidia':
+    mj=os.path.expanduser('~/.config/gateway/nvidia-models.json')
+    models=json.load(open(mj)) if os.path.exists(mj) else ['moonshotai/kimi-k2.6','minimaxai/minimax-m3.1-flash','nvidia/nemotron-3.5-super-vl-120b-a12b','deepseek-ai/deepseek-v4.1-flash','z-ai/glm-5.3-flash','mistralai/mistral-large-4-1t-a52b']
+    # sem container; shared = o limite de 40 rpm é da conta, então um 429 pausa todos os modelos NVIDIA
+    NV=[{'name':'nv-'+m.split('/')[-1],'url':'https://integrate.api.nvidia.com/v1','key':os.environ['NVIDIA_API_KEY'],'model':m,'maxChars':300000,'concurrency':4,'shared':'nvidia'} for m in models]
+    out+=NV
 bj=os.path.expanduser('~/.config/gateway/bridges.json')
-if os.path.exists(bj): out+=json.load(open(bj))  # pontes pequenas (Mistral, Qwen): chaves fora do opencode.jsonc
+if os.path.exists(bj) and not NV: out+=json.load(open(bj))  # pontes pequenas (Mistral, Qwen): chaves fora do opencode.jsonc
 REPL={'deepseek':[(2,4437),(3,4537)],'chatgpt':[(2,4427)]}   # réplicas (docker run ...-2/-3), mesma chave da original
 CONC={'muse':2}                                                         # Muse tem 2 abas na própria ponte
 for n,mx,ct in order:
@@ -29,9 +45,13 @@ print(json.dumps(out))
 PY
 ) || { echo "não consegui montar as pontes a partir do opencode.jsonc" >&2; exit 1; }
   export ROUTES='{"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek","muse","chatgpt","gemini"]},{"chain":["deepseek","muse","chatgpt","gemini"]}]}'
+  if [ "$GT_PROFILE" = nvidia ]; then
+    NVN=$(python3 -c "import json,sys;print(json.dumps([b['name'] for b in json.loads(sys.argv[1]) if b.get('shared')]))" "$BACKENDS")
+    export ROUTES="{\"tiers\":[{\"chain\":$(python3 -c "import json,sys;print(json.dumps(json.loads(sys.argv[1])+['deepseek','muse','chatgpt','gemini']))" "$NVN")}]}"
+  fi
   export BACKENDS GATEWAY_KEY="$(cat $CFG/key)" GATEWAY_BUDGET="${GATEWAY_BUDGET:-400000}"
-  nohup node "$GW_DIR/server.js" >> $CFG/gateway.log 2>&1 &
-  for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fs -m 1 http://127.0.0.1:4350/health >/dev/null && break; sleep 0.5; done
-  curl -fs -m 1 http://127.0.0.1:4350/health >/dev/null || { echo "gateway não subiu; veja $CFG/gateway.log" >&2; exit 1; }
+  GATEWAY_PORT=$PORT nohup node "$GW_DIR/server.js" >> $LOG 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fs -m 1 http://127.0.0.1:$PORT/health >/dev/null && break; sleep 0.5; done
+  curl -fs -m 1 http://127.0.0.1:$PORT/health >/dev/null || { echo "gateway não subiu; veja $LOG" >&2; exit 1; }
   echo "gateway iniciado (pid $!)" >&2
 fi

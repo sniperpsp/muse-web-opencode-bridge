@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Salva a SUA chave da NVIDIA (build.nvidia.com -> Get API Key, começa com nvapi-). Cada pessoa usa a própria.
+# Uso: gt-nvidia-key          (pede a chave, sem mostrar na tela)
+#      gt-nvidia-key nvapi-...  (ou passe como argumento)
+CFG=~/.config/gateway; mkdir -p $CFG
+K="${1:-}"
+[ -n "$K" ] || { read -rsp "Cole sua chave da NVIDIA (nvapi-...): " K; echo; }
+case "$K" in nvapi-*) ;; *) echo "chave inválida: deve começar com nvapi-" >&2; exit 1;; esac
+H=$(curl -s -m 30 -D - -o /tmp/.nv$$ -H "authorization: Bearer $K" -H 'content-type: application/json' \
+  -d '{"model":"nvidia/nemotron-3.5-lightning-30b-a3b","messages":[{"role":"user","content":"oi"}],"max_tokens":4}' \
+  https://integrate.api.nvidia.com/v1/chat/completions); rm -f /tmp/.nv$$
+CODE=$(printf '%s' "$H" | head -1 | awk '{print $2}')
+case "$CODE" in
+  200) umask 077; printf '%s' "$K" > $CFG/nvidia.key; chmod 600 $CFG/nvidia.key
+       echo "chave válida e salva em $CFG/nvidia.key"
+       printf '%s' "$H" | grep -i '^x-ratelimit' ;;
+  401|403) echo "a NVIDIA recusou a chave ($CODE). Confira se copiou inteira." >&2; exit 1;;
+  429) umask 077; printf '%s' "$K" > $CFG/nvidia.key; chmod 600 $CFG/nvidia.key; echo "chave salva (limite de uso atingido agora, mas ela é válida)";;
+  *) echo "não consegui validar (resposta: ${CODE:-sem resposta}). Chave NÃO salva." >&2; exit 1;;
+esac

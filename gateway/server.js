@@ -455,6 +455,8 @@ async function handleMessages(req, res) {
         console.log(`[${new Date().toISOString()}] ${b.name} falhou: ${e.message.slice(0, 120)}`);
         // ponte fora do ar (reinício/queda): pausa curta; falha da página/site: pausa longa; resposta inválida do modelo: sem pausa
         if (!e.noCooldown) downUntil.set(b.name, Date.now() + (/fetch failed|ECONNREFUSED|socket hang up/i.test(`${e.message} ${e.cause?.code || ""}`) ? 5000 : COOLDOWN_MS));
+        // limite de requisições da conta (429): vale para todos os backends com o mesmo "shared" (ex.: todos os modelos NVIDIA)
+        if (e.status === 429 && b.shared) BACKENDS.filter((x) => x.shared === b.shared).forEach((x) => downUntil.set(x.name, Date.now() + COOLDOWN_MS));
         last = e;
       } finally { inflight.set(b.name, Math.max(0, (inflight.get(b.name) || 1) - 1)); lastUse.set(b.name, Date.now()); }
     }

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Claude Code pelo GT NVIDIA: modelos gratuitos da NVIDIA primeiro, pontes web (DeepSeek, Muse, ChatGPT, Gemini) como reserva.
+CFG=~/.config/gateway
+[ -s $CFG/nvidia.key ] || gt-nvidia-key || exit 1
+GT_PROFILE=nvidia gt-gateway || exit 1
+[ -f $CFG/settings-nvidia.json ] || printf '{\n  "apiKeyHelper": "cat ~/.config/gateway/key",\n  "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:4351" }\n}\n' > $CFG/settings-nvidia.json
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4351
+exec claude --settings $CFG/settings-nvidia.json --model claude-sonnet-5-5 "$@"

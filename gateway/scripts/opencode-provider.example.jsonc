@@ -13,3 +13,18 @@
     "gt-auto": { "name": "GT Auto", "limit": { "context": 80000, "output": 16000 } }
   }
 }
+
+// GT NVIDIA: mesmo gateway em outra porta (4351), modelos gratuitos da NVIDIA primeiro e pontes web como reserva.
+"gateway-nvidia": {
+  "npm": "@ai-sdk/anthropic",
+  "name": "GT NVIDIA",
+  "options": {
+    "baseURL": "http://127.0.0.1:4351/v1",
+    "apiKey": "{file:~/.config/gateway/key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "gt-nvidia": { "name": "GT NVIDIA", "limit": { "context": 120000, "output": 16000 } }
+  }
+}

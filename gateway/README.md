@@ -33,6 +33,19 @@ UPSTREAM_KEY=<chave da ponte> GATEWAY_KEY=<chave que você inventar> node gatewa
 ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> claude
 ```
 
+## GT NVIDIA (modelos gratuitos da NVIDIA primeiro)
+
+Segundo gateway, na porta 4351, sem mexer no GT Auto. A ordem é: Kimi → MiniMax → Nemotron Super → DeepSeek V4.1 Flash → GLM 5.3 Flash → Mistral Large 4 → pontes web (DeepSeek, Muse, ChatGPT, Gemini). Falhou um modelo, cai no próximo; falhou todos, cai nas pontes web.
+
+```bash
+gt-nvidia-key          # cada pessoa cola a própria chave nvapi- (build.nvidia.com -> Get API Key); testa e salva em ~/.config/gateway/nvidia.key
+gt-nvidia-claude       # Claude Code pelo GT NVIDIA
+gt-nvidia-opencode     # OpenCode pelo GT NVIDIA (provider gateway-nvidia, de scripts/opencode-provider.example.jsonc)
+```
+
+- O limite da conta gratuita é de 40 requisições por minuto, para todos os modelos juntos. Um `429` pausa **todos** os modelos NVIDIA por `GATEWAY_COOLDOWN_MS` (campo `shared` no backend) e o pedido segue para as pontes web.
+- Para trocar os modelos, crie `~/.config/gateway/nvidia-models.json` com a lista de IDs (`["moonshotai/kimi-k2.6", ...]`). IDs válidos: `curl https://integrate.api.nvidia.com/v1/models`.
+
 ## Configuração
 
 | Variável | Padrão | Função |
