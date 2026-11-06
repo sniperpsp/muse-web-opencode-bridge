@@ -235,6 +235,15 @@ def gateway_block():
     }
 
 
+def nvidia_block():
+    return {
+        "npm": "@ai-sdk/anthropic",
+        "name": "GT NVIDIA",
+        "options": {"baseURL": "http://127.0.0.1:4351/v1", "apiKey": "{file:~/.config/gateway/key}", "timeout": 600000, "headerTimeout": 600000},
+        "models": {"gt-nvidia": {"name": "GT NVIDIA", "limit": {"context": 120000, "output": 16000}}},
+    }
+
+
 def register(config_path, blocks):
     """Acrescenta provedores ao opencode.jsonc sem tocar no resto (comentários incluídos). Faz backup e confere o resultado."""
     path = Path(config_path)
@@ -281,10 +290,10 @@ def register(config_path, blocks):
 
 # ---------- gateway ----------
 def install_gateway():
-    step("Instalando o gateway (comandos gt-claude e gt-opencode)")
+    step("Instalando o gateway (gt-claude, gt-opencode e GT NVIDIA)")
     bindir = HOME / ".local" / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
-    for f in ("gt-gateway", "gt-claude", "gt-opencode"):
+    for f in ("gt-gateway", "gt-claude", "gt-opencode", "gt-nvidia-key", "gt-nvidia-claude", "gt-nvidia-opencode"):
         text = (ROOT / "gateway" / "scripts" / f).read_text()
         text = text.replace("${GT_REPO:-/mnt/e/muse-opencode-bridge}", "${GT_REPO:-" + str(ROOT) + "}")  # caminho deste clone
         dest = bindir / f
@@ -358,6 +367,7 @@ def main():
     step("Registrando no OpenCode")
     if blocks and use_gateway:
         blocks["gateway"] = gateway_block()
+        blocks["gateway-nvidia"] = nvidia_block()
     if blocks:
         register(args.config, blocks)
     else:
@@ -379,6 +389,7 @@ def main():
         say("  • OpenCode: feche e abra de novo (ele só lê a configuração ao abrir) e escolha o modelo na lista.")
         if use_gateway:
             say("  • Pelo gateway (roteia entre as pontes, modelo único): gt-opencode   ou   gt-claude")
+            say("  • GT NVIDIA (modelos gratuitos da NVIDIA primeiro, pontes web de reserva): rode gt-nvidia-key (cole a SUA chave nvapi-) e depois gt-nvidia-claude ou gt-nvidia-opencode")
         say("  • Mais pontes, réplicas e ajustes: README.md e gateway/README.md")
 
 

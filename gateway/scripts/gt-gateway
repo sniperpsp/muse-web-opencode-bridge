@@ -17,8 +17,11 @@ fi
 if ! curl -fs -m 2 http://127.0.0.1:$PORT/health >/dev/null; then
   BACKENDS=$(python3 - <<'PY'
 import re,json,os,subprocess
-t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
-prov=json.loads(t)['provider']
+try:
+    t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)
+    prov=json.loads(t).get('provider',{})
+except (OSError, ValueError):
+    prov={}   # sem OpenCode/pontes web: só vale no perfil nvidia (sem reserva)
 # (provedor, limite de caracteres aceito pela ponte)
 order=[('deepseek',450000,'deepseek-opencode-bridge'),('muse',450000,'muse-opencode-bridge'),('chatgpt',450000,'chatgpt-opencode-bridge'),('gemini',100000,'gemini-opencode-bridge')]  # gemini: lento, por último (ver LIMITES.md)
 out=[]
