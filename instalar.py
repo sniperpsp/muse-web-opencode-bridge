@@ -11,6 +11,7 @@ Faz, nesta ordem:
 Uso:  python3 instalar.py                         (pergunta o que instalar)
       python3 instalar.py --pontes deepseek,muse   (sem perguntas)
       python3 instalar.py --todas --sem-gateway
+      python3 instalar.py --nvidia                 (perfis diretos por modelo, sem gateway)
 Pode ser rodado de novo: o que já está de pé, logado ou registrado é pulado.
 No Windows, rode dentro do WSL 2.
 """
@@ -38,6 +39,17 @@ BRIDGES = {
     "chatgpt": dict(site="ChatGPT", api=4327, vnc=4328, model="chatgpt-web", ram="1,3 a 1,8 GB"),
     "gemini": dict(site="Gemini", api=4347, vnc=4348, model="gemini-web", ram="~1 GB"),
 }
+
+NVIDIA_MODELS = [
+    ("nvidia-kimi", "moonshotai/kimi-k2.6", "NVIDIA Kimi K2.6"),
+    ("nvidia-mistral", "mistralai/mistral-large-4-1t-a52b", "NVIDIA Mistral Large 4"),
+    ("nvidia-nemotron-bolt", "nvidia/nemotron-3.5-bolt-e4b", "NVIDIA Nemotron 3.5 Bolt E4B"),
+    ("nvidia-minimax", "minimaxai/minimax-m3.1-flash", "NVIDIA MiniMax M3.1 Flash"),
+    ("nvidia-deepseek", "deepseek-ai/deepseek-v4.1-flash", "NVIDIA DeepSeek V4.1 Flash"),
+    ("nvidia-glm", "z-ai/glm-5.3-flash", "NVIDIA GLM 5.3 Flash"),
+    ("nvidia-nemotron-lightning", "nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA Nemotron 3.5 Lightning"),
+    ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "NVIDIA Nemotron 3 Ultra 550B"),
+]
 
 
 def say(msg=""):
@@ -235,13 +247,90 @@ def gateway_block():
     }
 
 
-def nvidia_block():
+def nvidia_blocks():
     return {
-        "npm": "@ai-sdk/anthropic",
-        "name": "GT NVIDIA",
-        "options": {"baseURL": "http://127.0.0.1:4351/v1", "apiKey": "{file:~/.config/gateway/key}", "timeout": 600000, "headerTimeout": 600000},
-        "models": {"gt-nvidia": {"name": "GT NVIDIA", "limit": {"context": 120000, "output": 16000}}},
+        provider: {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": label,
+            "options": {
+                "baseURL": "https://integrate.api.nvidia.com/v1",
+                "apiKey": "{file:~/.config/gateway/nvidia.key}",
+                "timeout": 600000,
+                "headerTimeout": 600000,
+            },
+            "models": {model: {"name": label, "limit": {"context": 120000, "output": 16000}}},
+        }
+        for provider, model, label in NVIDIA_MODELS
     }
+
+
+def remove_legacy_nvidia_provider(text):
+    """Remove só o provedor agregado antigo, sem reformatar o JSONC inteiro."""
+    parent = re.search(r'"provider"\s*:\s*\{', text)
+    if not parent:
+        return text, False
+    opening = text.find("{", parent.start())
+    matches = re.finditer(r'"gateway-nvidia"\s*:\s*\{', text[opening + 1:])
+    match = next((item for item in matches if not text[text.rfind("\n", 0, opening + 1 + item.start()) + 1:opening + 1 + item.start()].lstrip().startswith("//")), None)
+    if match is None:
+        return text, False
+    start = opening + 1 + match.start()
+    line_start = text.rfind("\n", 0, start) + 1
+    if not text[line_start:start].strip(): start = line_start
+    value_open = text.find("{", start)
+    depth = 0
+    quote = False
+    escaped = False
+    line_comment = False
+    block_comment = False
+    end = None
+    for i in range(value_open, len(text)):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if line_comment:
+            if ch == "\n": line_comment = False
+            continue
+        if block_comment:
+            if ch == "*" and nxt == "/": block_comment = False
+            continue
+        if quote:
+            if escaped: escaped = False
+            elif ch == "\\": escaped = True
+            elif ch == '"': quote = False
+            continue
+        if ch == "/" and nxt == "/": line_comment = True; continue
+        if ch == "/" and nxt == "*": block_comment = True; continue
+        if ch == '"': quote = True
+        elif ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end is None:
+        raise ValueError("O provedor gateway-nvidia está malformado; configuração preservada.")
+    tail = end
+    while tail < len(text) and text[tail].isspace(): tail += 1
+    if tail < len(text) and text[tail] == ",":
+        end = tail + 1
+    else:
+        # É a última entrada: remove apenas o separador JSONC anterior, fora de strings.
+        depth = 0; quote = False; escaped = False; comma = None
+        for i in range(opening + 1, start):
+            ch = text[i]
+            if quote:
+                if escaped: escaped = False
+                elif ch == "\\": escaped = True
+                elif ch == '"': quote = False
+            elif ch == '"': quote = True
+            elif ch == "{": depth += 1
+            elif ch == "}": depth -= 1
+            elif ch == "," and depth == 0: comma = i
+        if comma is not None:
+            start = comma
+    updated = text[:start] + text[end:]
+    json.loads(strip_comments(updated))
+    return updated, True
 
 
 def register(config_path, blocks):
@@ -288,12 +377,40 @@ def register(config_path, blocks):
     return True
 
 
-# ---------- gateway ----------
-def install_gateway():
-    step("Instalando o gateway (gt-claude, gt-opencode e GT NVIDIA)")
+def configure_nvidia_opencode(config_path):
+    path = Path(config_path)
+    if path.exists():
+        original = path.read_text()
+        updated, removed = remove_legacy_nvidia_provider(original)
+        if removed:
+            backup = path.with_name(path.name + ".bak-nvidia-" + time.strftime("%Y%m%d%H%M%S"))
+            shutil.copy2(path, backup)
+            path.write_text(updated)
+            say(f"  ✓ removido o perfil agregado antigo (backup: {backup.name})")
+    if not register(path, nvidia_blocks()):
+        if path.exists() and "original" in locals():
+            path.write_text(original)
+        return False
     bindir = HOME / ".local" / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
-    for f in ("gt-gateway", "gt-claude", "gt-opencode", "gt-nvidia-key", "gt-nvidia-claude", "gt-nvidia-opencode"):
+    for name in ("gt-gateway", "gt-nvidia-key"):
+        source = ROOT / "gateway" / "scripts" / name
+        text = source.read_text().replace("${GT_REPO:-/mnt/e/muse-opencode-bridge}", "${GT_REPO:-" + str(ROOT) + "}")
+        target = bindir / name
+        target.write_text(text)
+        target.chmod(0o755)
+    for old in ("gt-nvidia-claude", "gt-nvidia-opencode"):
+        (bindir / old).unlink(missing_ok=True)
+    say("  ✓ perfis OpenCode conectados diretamente a https://integrate.api.nvidia.com/v1")
+    return True
+
+
+# ---------- gateway ----------
+def install_gateway():
+    step("Instalando o gateway das pontes web")
+    bindir = HOME / ".local" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for f in ("gt-gateway", "gt-claude", "gt-opencode"):
         text = (ROOT / "gateway" / "scripts" / f).read_text()
         text = text.replace("${GT_REPO:-/mnt/e/muse-opencode-bridge}", "${GT_REPO:-" + str(ROOT) + "}")  # caminho deste clone
         dest = bindir / f
@@ -318,8 +435,17 @@ def main():
     ap.add_argument("--sem-gateway", action="store_true", help="não instala o gateway (gt-claude/gt-opencode)")
     ap.add_argument("--sem-abrir", action="store_true", help="não abre o navegador (só mostra os endereços de login)")
     ap.add_argument("--sem-teste", action="store_true", help="não faz a chamada de teste (pong)")
+    ap.add_argument("--nvidia", action="store_true", help="configura perfis NVIDIA diretos no OpenCode, sem gateway")
     ap.add_argument("--config", default=str(HOME / ".config" / "opencode" / "opencode.jsonc"), help="arquivo de configuração do OpenCode")
     args = ap.parse_args()
+
+    if args.nvidia:
+        step("Configurando modelos NVIDIA diretos no OpenCode")
+        if not configure_nvidia_opencode(args.config):
+            sys.exit("Não foi possível atualizar a configuração; o arquivo anterior foi preservado.")
+        say("RESULTADO " + json.dumps({"perfis_nvidia": [p for p, _, _ in NVIDIA_MODELS], "gateway": False}))
+        say("Feche e abra o OpenCode; escolha o perfil NVIDIA desejado no seletor de modelo.")
+        return
 
     say("Instalador das pontes web → OpenCode / Claude Code")
     if args.todas:
@@ -367,7 +493,6 @@ def main():
     step("Registrando no OpenCode")
     if blocks and use_gateway:
         blocks["gateway"] = gateway_block()
-        blocks["gateway-nvidia"] = nvidia_block()
     if blocks:
         register(args.config, blocks)
     else:
@@ -389,7 +514,7 @@ def main():
         say("  • OpenCode: feche e abra de novo (ele só lê a configuração ao abrir) e escolha o modelo na lista.")
         if use_gateway:
             say("  • Pelo gateway (roteia entre as pontes, modelo único): gt-opencode   ou   gt-claude")
-            say("  • GT NVIDIA (modelos gratuitos da NVIDIA primeiro, pontes web de reserva): rode gt-nvidia-key (cole a SUA chave nvapi-) e depois gt-nvidia-claude ou gt-nvidia-opencode")
+        say("  • NVIDIA direta no OpenCode, sem gateway: python3 instalar.py --nvidia")
         say("  • Mais pontes, réplicas e ajustes: README.md e gateway/README.md")
 
 

@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# OpenCode pelo GT NVIDIA (provider "gateway-nvidia", modelo gt-nvidia).
-[ -s ~/.config/gateway/nvidia.key ] || gt-nvidia-key || exit 1
-GT_PROFILE=nvidia gt-gateway || exit 1
-exec opencode --model gateway-nvidia/gt-nvidia "$@"

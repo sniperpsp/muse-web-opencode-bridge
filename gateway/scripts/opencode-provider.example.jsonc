@@ -1,4 +1,5 @@
-// Dentro de "provider" no ~/.config/opencode/opencode.jsonc. A chave do gateway fica em ~/.config/gateway/key (não no arquivo).
+// Dentro de "provider" no ~/.config/opencode/opencode.jsonc.
+// A chave do gateway geral fica em ~/.config/gateway/key; NVIDIA usa nvidia.key.
 "gateway": {
   "npm": "@ai-sdk/anthropic",
   "name": "GT Pontes Web",
@@ -12,19 +13,47 @@
     // context baixo de propósito: o OpenCode resume a sessão antes de o histórico passar do limite das pontes
     "gt-auto": { "name": "GT Auto", "limit": { "context": 80000, "output": 16000 } }
   }
-}
+},
 
-// GT NVIDIA: mesmo gateway em outra porta (4351), modelos gratuitos da NVIDIA primeiro e pontes web como reserva.
-"gateway-nvidia": {
-  "npm": "@ai-sdk/anthropic",
-  "name": "GT NVIDIA",
-  "options": {
-    "baseURL": "http://127.0.0.1:4351/v1",
-    "apiKey": "{file:~/.config/gateway/key}",
-    "timeout": 600000,
-    "headerTimeout": 600000
-  },
-  "models": {
-    "gt-nvidia": { "name": "GT NVIDIA", "limit": { "context": 120000, "output": 16000 } }
-  }
+// NVIDIA direto: cada provedor fixa um único modelo, sem seleção automática ou fallback.
+// Repita os blocos gerados por `python3 instalar.py --nvidia`.
+"nvidia-kimi": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA Kimi K2.6",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "moonshotai/kimi-k2.6": { "name": "NVIDIA Kimi K2.6", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-mistral": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA Mistral Large 4",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "mistralai/mistral-large-4-1t-a52b": { "name": "NVIDIA Mistral Large 4", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-nemotron-bolt": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA Nemotron 3.5 Bolt E4B",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "nvidia/nemotron-3.5-bolt-e4b": { "name": "NVIDIA Nemotron 3.5 Bolt E4B", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-minimax": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA MiniMax M3.1 Flash",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "minimaxai/minimax-m3.1-flash": { "name": "NVIDIA MiniMax M3.1 Flash", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-deepseek": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA DeepSeek V4.1 Flash",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "deepseek-ai/deepseek-v4.1-flash": { "name": "NVIDIA DeepSeek V4.1 Flash", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-glm": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA GLM 5.3 Flash",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "z-ai/glm-5.3-flash": { "name": "NVIDIA GLM 5.3 Flash", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-nemotron-lightning": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA Nemotron 3.5 Lightning",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "nvidia/nemotron-3.5-lightning-30b-a3b": { "name": "NVIDIA Nemotron 3.5 Lightning", "limit": { "context": 120000, "output": 16000 } } }
+},
+"nvidia-nemotron-ultra": {
+  "npm": "@ai-sdk/openai-compatible", "name": "NVIDIA Nemotron 3 Ultra 550B",
+  "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{file:~/.config/gateway/nvidia.key}", "timeout": 600000, "headerTimeout": 600000 },
+  "models": { "nvidia/nemotron-3-ultra-550b-a55b": { "name": "NVIDIA Nemotron 3 Ultra 550B", "limit": { "context": 120000, "output": 16000 } } }
 }
