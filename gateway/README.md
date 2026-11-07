@@ -35,13 +35,32 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4350 ANTHROPIC_API_KEY=<GATEWAY_KEY> claude
 
 ## NVIDIA direto no OpenCode
 
-O instalador registra um provedor separado por modelo, todos chamando a API oficial da NVIDIA. Não inicia o gateway local e não troca de modelo se um falhar.
+O instalador registra um provedor separado por modelo, todos chamando a API oficial da NVIDIA (`https://integrate.api.nvidia.com/v1`). Não inicia o gateway local e não troca de modelo se um falhar.
 
 ```bash
-python3 instalar.py --nvidia
+gt-nvidia-key                     # grava sua chave em ~/.config/gateway/nvidia.key sem mostrar no terminal
+python3 instalar.py --nvidia      # WSL/Linux
+python3 instalar.py --nvidia --config /mnt/c/Users/<você>/.config/opencode/opencode.jsonc   # OpenCode do Windows
 ```
 
-Os perfis aparecem no seletor de modelo do OpenCode: Mistral Large 4, Nemotron Super VL e MiniMax M3.1 Flash (texto e imagem), além de Nemotron Bolt, Lightning, Ultra e Laguna XS 2.1 (texto). A chave é lida de `~/.config/gateway/nvidia.key`; `gt-nvidia-key` configura esse arquivo sem mostrá-la no terminal. A disponibilidade de cada endpoint pode variar por conta/modelo; erro de acesso aparece como erro do próprio modelo, sem fallback silencioso.
+Feche e abra o OpenCode e digite **GT NVIDIA** no seletor de modelo. A parte cinza diz para que cada um é bom:
+
+| No seletor | Modelo NVIDIA | Para que é bom | Lê imagem |
+|---|---|---|---|
+| GT NVIDIA Ultra 550B | `nvidia/nemotron-3-ultra-550b-a55b` | Melhor p/ texto · só texto | não |
+| GT NVIDIA Super VL | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Melhor p/ ver imagem | sim |
+| GT NVIDIA Laguna XS | `poolside/laguna-xs-2.1` | Código · rápido · só texto | não |
+| GT NVIDIA Mistral L4 | `mistralai/mistral-large-4-1t-a52b` | Imagem+texto · caprichado | sim |
+| GT NVIDIA Step 5 | `stepfun-ai/step-5-preview` | Imagem+texto · bom português | sim |
+| GT NVIDIA Muse Glimmer | `meta/muse-glimmer-30b` | Imagem+texto · criativo | sim |
+| GT NVIDIA MiniMax 3.1 | `minimaxai/minimax-m3.1-flash` | Imagem+texto · rápido (P&D) | sim |
+| GT NVIDIA Nano Omni | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Leve e rápido · vê imagem | sim |
+| GT NVIDIA Lightning | `nvidia/nemotron-3.5-lightning-30b-a3b` | Raciocínio rápido · só texto | não |
+| GT NVIDIA Bolt | `nvidia/nemotron-3.5-bolt-e4b` | Rapidíssimo · tarefa simples | sim |
+
+Todos foram testados em 2026-11-06 dentro do OpenCode 2.2.6 lendo arquivo com a ferramenta `Read`; os que leem imagem, também com imagem anexada. Ficaram de fora por não responderem ou serem lentos demais: DeepSeek V4.1 Flash, GLM 5.3 Flash, GPT-OSS 20B, Gemma 4 31B, Llama 3.2 90B Vision e Kimi K2.6 (404). MiniMax M3.1 é descrito pela NVIDIA como de pesquisa e desenvolvimento: confira os termos antes de uso comercial.
+
+A chave **nunca** vai para o repositório nem para o `opencode.jsonc`: o perfil só aponta para `{file:~/.config/gateway/nvidia.key}`. A disponibilidade de cada endpoint varia por conta/modelo; erro de acesso aparece como erro do próprio modelo, sem fallback silencioso. Para acrescentar um modelo, edite `NVIDIA_MODELS` em `instalar.py` e repita os testes.
 
 ## Configuração
 

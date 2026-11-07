@@ -15,10 +15,13 @@
   }
 },
 
-// NVIDIA direto: cada provedor fixa um modelo; o instalador cria estes blocos.
-"nvidia-mistral": {
+// NVIDIA direto: cada provedor fixa UM modelo ("GT NVIDIA <modelo>"); a parte
+// cinza do seletor (nome do provedor) diz para que ele é bom. Gerado a partir de
+// instalar.py (NVIDIA_MODELS) — rode `python3 instalar.py --nvidia` em vez de copiar.
+// A chave NUNCA fica aqui: é lida de ~/.config/gateway/nvidia.key (gt-nvidia-key).
+"nvidia-nemotron-ultra": {
   "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Mistral Large 4",
+  "name": "Melhor p/ texto · só texto",
   "options": {
     "baseURL": "https://integrate.api.nvidia.com/v1",
     "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -26,8 +29,37 @@
     "headerTimeout": 600000
   },
   "models": {
-    "mistralai/mistral-large-4-1t-a52b": {
-      "name": "NVIDIA Mistral Large 4",
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      "name": "GT NVIDIA Ultra 550B",
+      "tool_call": true,
+      "attachment": false,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limit": {
+        "context": 120000,
+        "output": 16000
+      }
+    }
+  }
+},
+"nvidia-nemotron-super-vl": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Melhor p/ ver imagem",
+  "options": {
+    "baseURL": "https://integrate.api.nvidia.com/v1",
+    "apiKey": "{file:~/.config/gateway/nvidia.key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "nvidia/nemotron-3.5-super-vl-120b-a12b": {
+      "name": "GT NVIDIA Super VL",
       "tool_call": true,
       "attachment": true,
       "modalities": {
@@ -46,9 +78,9 @@
     }
   }
 },
-"nvidia-nemotron-bolt": {
+"nvidia-laguna": {
   "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Nemotron 3.5 Bolt E4B",
+  "name": "Código · rápido · só texto",
   "options": {
     "baseURL": "https://integrate.api.nvidia.com/v1",
     "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -56,8 +88,8 @@
     "headerTimeout": 600000
   },
   "models": {
-    "nvidia/nemotron-3.5-bolt-e4b": {
-      "name": "NVIDIA Nemotron 3.5 Bolt E4B",
+    "poolside/laguna-xs-2.1": {
+      "name": "GT NVIDIA Laguna XS",
       "tool_call": true,
       "attachment": false,
       "modalities": {
@@ -75,9 +107,99 @@
     }
   }
 },
+"nvidia-mistral": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Imagem+texto · caprichado",
+  "options": {
+    "baseURL": "https://integrate.api.nvidia.com/v1",
+    "apiKey": "{file:~/.config/gateway/nvidia.key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "mistralai/mistral-large-4-1t-a52b": {
+      "name": "GT NVIDIA Mistral L4",
+      "tool_call": true,
+      "attachment": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limit": {
+        "context": 120000,
+        "output": 16000
+      }
+    }
+  }
+},
+"nvidia-step": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Imagem+texto · bom português",
+  "options": {
+    "baseURL": "https://integrate.api.nvidia.com/v1",
+    "apiKey": "{file:~/.config/gateway/nvidia.key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "stepfun-ai/step-5-preview": {
+      "name": "GT NVIDIA Step 5",
+      "tool_call": true,
+      "attachment": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limit": {
+        "context": 120000,
+        "output": 16000
+      }
+    }
+  }
+},
+"nvidia-muse-glimmer": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Imagem+texto · criativo",
+  "options": {
+    "baseURL": "https://integrate.api.nvidia.com/v1",
+    "apiKey": "{file:~/.config/gateway/nvidia.key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "meta/muse-glimmer-30b": {
+      "name": "GT NVIDIA Muse Glimmer",
+      "tool_call": true,
+      "attachment": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limit": {
+        "context": 120000,
+        "output": 16000
+      }
+    }
+  }
+},
 "nvidia-minimax": {
   "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA MiniMax M3.1 Flash",
+  "name": "Imagem+texto · rápido (P&D)",
   "options": {
     "baseURL": "https://integrate.api.nvidia.com/v1",
     "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -86,7 +208,37 @@
   },
   "models": {
     "minimaxai/minimax-m3.1-flash": {
-      "name": "NVIDIA MiniMax M3.1 Flash",
+      "name": "GT NVIDIA MiniMax 3.1",
+      "tool_call": true,
+      "attachment": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limit": {
+        "context": 120000,
+        "output": 16000
+      }
+    }
+  }
+},
+"nvidia-nemotron-nano-omni": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Leve e rápido · vê imagem",
+  "options": {
+    "baseURL": "https://integrate.api.nvidia.com/v1",
+    "apiKey": "{file:~/.config/gateway/nvidia.key}",
+    "timeout": 600000,
+    "headerTimeout": 600000
+  },
+  "models": {
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
+      "name": "GT NVIDIA Nano Omni",
       "tool_call": true,
       "attachment": true,
       "modalities": {
@@ -107,7 +259,7 @@
 },
 "nvidia-nemotron-lightning": {
   "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Nemotron 3.5 Lightning",
+  "name": "Raciocínio rápido · só texto",
   "options": {
     "baseURL": "https://integrate.api.nvidia.com/v1",
     "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -116,7 +268,7 @@
   },
   "models": {
     "nvidia/nemotron-3.5-lightning-30b-a3b": {
-      "name": "NVIDIA Nemotron 3.5 Lightning",
+      "name": "GT NVIDIA Lightning",
       "tool_call": true,
       "attachment": false,
       "modalities": {
@@ -134,9 +286,9 @@
     }
   }
 },
-"nvidia-nemotron-ultra": {
+"nvidia-nemotron-bolt": {
   "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Nemotron 3 Ultra 550B",
+  "name": "Rapidíssimo · tarefa simples",
   "options": {
     "baseURL": "https://integrate.api.nvidia.com/v1",
     "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -144,66 +296,8 @@
     "headerTimeout": 600000
   },
   "models": {
-    "nvidia/nemotron-3-ultra-550b-a55b": {
-      "name": "NVIDIA Nemotron 3 Ultra 550B",
-      "tool_call": true,
-      "attachment": false,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "limit": {
-        "context": 120000,
-        "output": 16000
-      }
-    }
-  }
-},
-"nvidia-laguna": {
-  "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Laguna XS 2.1",
-  "options": {
-    "baseURL": "https://integrate.api.nvidia.com/v1",
-    "apiKey": "{file:~/.config/gateway/nvidia.key}",
-    "timeout": 600000,
-    "headerTimeout": 600000
-  },
-  "models": {
-    "poolside/laguna-xs-2.1": {
-      "name": "NVIDIA Laguna XS 2.1",
-      "tool_call": true,
-      "attachment": false,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "limit": {
-        "context": 120000,
-        "output": 16000
-      }
-    }
-  }
-},
-"nvidia-nemotron-super-vl": {
-  "npm": "@ai-sdk/openai-compatible",
-  "name": "NVIDIA Nemotron 3.5 Super VL",
-  "options": {
-    "baseURL": "https://integrate.api.nvidia.com/v1",
-    "apiKey": "{file:~/.config/gateway/nvidia.key}",
-    "timeout": 600000,
-    "headerTimeout": 600000
-  },
-  "models": {
-    "nvidia/nemotron-3.5-super-vl-120b-a12b": {
-      "name": "NVIDIA Nemotron 3.5 Super VL",
+    "nvidia/nemotron-3.5-bolt-e4b": {
+      "name": "GT NVIDIA Bolt",
       "tool_call": true,
       "attachment": true,
       "modalities": {
