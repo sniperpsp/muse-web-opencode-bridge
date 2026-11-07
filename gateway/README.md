@@ -41,7 +41,7 @@ O instalador registra um provedor separado por modelo, todos chamando a API ofic
 python3 instalar.py --nvidia
 ```
 
-Os perfis aparecem no seletor de modelo do OpenCode: Kimi K2.6, Mistral Large 4, Nemotron Bolt/Lightning/Ultra, MiniMax, DeepSeek e GLM. A chave é lida de `~/.config/gateway/nvidia.key`; `gt-nvidia-key` configura esse arquivo sem mostrá-la no terminal. A disponibilidade de cada endpoint pode variar por conta/modelo; erro de acesso aparece como erro do próprio modelo, sem fallback silencioso.
+Os perfis aparecem no seletor de modelo do OpenCode: Mistral Large 4, Nemotron Bolt/Lightning/Ultra/Super VL, MiniMax e Laguna XS 2.1. A chave é lida de `~/.config/gateway/nvidia.key`; `gt-nvidia-key` configura esse arquivo sem mostrá-la no terminal. A disponibilidade de cada endpoint pode variar por conta/modelo; erro de acesso aparece como erro do próprio modelo, sem fallback silencioso.
 
 ## Configuração
 

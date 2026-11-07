@@ -41,14 +41,13 @@ BRIDGES = {
 }
 
 NVIDIA_MODELS = [
-    ("nvidia-kimi", "moonshotai/kimi-k2.6", "NVIDIA Kimi K2.6"),
     ("nvidia-mistral", "mistralai/mistral-large-4-1t-a52b", "NVIDIA Mistral Large 4"),
     ("nvidia-nemotron-bolt", "nvidia/nemotron-3.5-bolt-e4b", "NVIDIA Nemotron 3.5 Bolt E4B"),
     ("nvidia-minimax", "minimaxai/minimax-m3.1-flash", "NVIDIA MiniMax M3.1 Flash"),
-    ("nvidia-deepseek", "deepseek-ai/deepseek-v4.1-flash", "NVIDIA DeepSeek V4.1 Flash"),
-    ("nvidia-glm", "z-ai/glm-5.3-flash", "NVIDIA GLM 5.3 Flash"),
     ("nvidia-nemotron-lightning", "nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA Nemotron 3.5 Lightning"),
     ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "NVIDIA Nemotron 3 Ultra 550B"),
+    ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "NVIDIA Nemotron 3.5 Super VL"),
+    ("nvidia-laguna", "poolside/laguna-xs-2.1", "NVIDIA Laguna XS 2.1"),
 ]
 
 
@@ -264,13 +263,13 @@ def nvidia_blocks():
     }
 
 
-def remove_legacy_nvidia_provider(text):
-    """Remove só o provedor agregado antigo, sem reformatar o JSONC inteiro."""
+def remove_legacy_nvidia_provider(text, provider="gateway-nvidia"):
+    """Remove um provedor antigo sem reformatar o JSONC inteiro."""
     parent = re.search(r'"provider"\s*:\s*\{', text)
     if not parent:
         return text, False
     opening = text.find("{", parent.start())
-    matches = re.finditer(r'"gateway-nvidia"\s*:\s*\{', text[opening + 1:])
+    matches = re.finditer(json.dumps(provider) + r'\s*:\s*\{', text[opening + 1:])
     match = next((item for item in matches if not text[text.rfind("\n", 0, opening + 1 + item.start()) + 1:opening + 1 + item.start()].lstrip().startswith("//")), None)
     if match is None:
         return text, False
@@ -308,7 +307,7 @@ def remove_legacy_nvidia_provider(text):
                 end = i + 1
                 break
     if end is None:
-        raise ValueError("O provedor gateway-nvidia está malformado; configuração preservada.")
+        raise ValueError("O provedor antigo está malformado; configuração preservada.")
     tail = end
     while tail < len(text) and text[tail].isspace(): tail += 1
     if tail < len(text) and text[tail] == ",":
@@ -381,12 +380,16 @@ def configure_nvidia_opencode(config_path):
     path = Path(config_path)
     if path.exists():
         original = path.read_text()
-        updated, removed = remove_legacy_nvidia_provider(original)
+        updated = original
+        removed = False
+        for provider in ("gateway-nvidia", "nvidia-kimi", "nvidia-deepseek", "nvidia-glm"):
+            updated, found = remove_legacy_nvidia_provider(updated, provider)
+            removed = removed or found
         if removed:
             backup = path.with_name(path.name + ".bak-nvidia-" + time.strftime("%Y%m%d%H%M%S"))
             shutil.copy2(path, backup)
             path.write_text(updated)
-            say(f"  ✓ removido o perfil agregado antigo (backup: {backup.name})")
+            say(f"  ✓ removidos os perfis NVIDIA antigos (backup: {backup.name})")
     if not register(path, nvidia_blocks()):
         if path.exists() and "original" in locals():
             path.write_text(original)

@@ -37,6 +37,13 @@ class NvidiaProfilesTest(unittest.TestCase):
         self.assertTrue(removed_last)
         self.assertEqual(list(json.loads(updated_last)["provider"]), ["beatapi"])
 
+    def test_remove_obsolete_model_preserves_unrelated_provider(self):
+        text = '{"provider":{"nvidia-kimi":{"models":{"old":{}}},"beatapi":{"models":{"free":{}}}}}'
+        updated, removed = instalar.remove_legacy_nvidia_provider(text, "nvidia-kimi")
+        self.assertTrue(removed)
+        self.assertEqual(list(json.loads(updated)["provider"]), ["beatapi"])
+        self.assertEqual(len(instalar.NVIDIA_MODELS), 7)
+
     def test_register_adds_profiles_without_replacing_existing_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "opencode.json"
