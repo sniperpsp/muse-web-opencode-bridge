@@ -46,9 +46,11 @@ NVIDIA_MODELS = [
     ("nvidia-minimax", "minimaxai/minimax-m3.1-flash", "NVIDIA MiniMax M3.1 Flash"),
     ("nvidia-nemotron-lightning", "nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA Nemotron 3.5 Lightning"),
     ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "NVIDIA Nemotron 3 Ultra 550B"),
-    ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "NVIDIA Nemotron 3.5 Super VL"),
     ("nvidia-laguna", "poolside/laguna-xs-2.1", "NVIDIA Laguna XS 2.1"),
+    ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "NVIDIA Nemotron 3.5 Super VL"),
 ]
+
+NVIDIA_VISION = {"nvidia-mistral", "nvidia-minimax", "nvidia-nemotron-super-vl"}
 
 
 def say(msg=""):
@@ -257,7 +259,7 @@ def nvidia_blocks():
                 "timeout": 600000,
                 "headerTimeout": 600000,
             },
-            "models": {model: {"name": label, "limit": {"context": 120000, "output": 16000}}},
+            "models": {model: {"name": label, "tool_call": True, "attachment": provider in NVIDIA_VISION, "modalities": {"input": ["text", "image"] if provider in NVIDIA_VISION else ["text"], "output": ["text"]}, "limit": {"context": 120000, "output": 16000}}},
         }
         for provider, model, label in NVIDIA_MODELS
     }
@@ -382,7 +384,7 @@ def configure_nvidia_opencode(config_path):
         original = path.read_text()
         updated = original
         removed = False
-        for provider in ("gateway-nvidia", "nvidia-kimi", "nvidia-deepseek", "nvidia-glm"):
+        for provider in ("gateway-nvidia", "nvidia-kimi", "nvidia-deepseek", "nvidia-glm", "nvidia-nemotron-lightning", "nvidia-nemotron-ultra", "nvidia-laguna", *[item[0] for item in NVIDIA_MODELS]):
             updated, found = remove_legacy_nvidia_provider(updated, provider)
             removed = removed or found
         if removed:

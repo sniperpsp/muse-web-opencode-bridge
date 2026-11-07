@@ -18,6 +18,9 @@ class NvidiaProfilesTest(unittest.TestCase):
             self.assertIn("nvidia.key", profile["options"]["apiKey"])
             self.assertEqual(list(profile["models"]), [model])
             self.assertEqual(profile["models"][model]["name"], label)
+            self.assertTrue(profile["models"][model]["tool_call"])
+            self.assertEqual(profile["models"][model]["attachment"], provider in instalar.NVIDIA_VISION)
+            self.assertEqual(profile["models"][model]["modalities"]["input"], ["text", "image"] if provider in instalar.NVIDIA_VISION else ["text"])
 
     def test_legacy_aggregate_removal_preserves_other_provider(self):
         text = '''{
