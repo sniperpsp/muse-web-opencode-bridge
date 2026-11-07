@@ -45,7 +45,7 @@ class NvidiaProfilesTest(unittest.TestCase):
         updated, removed = instalar.remove_legacy_nvidia_provider(text, "nvidia-kimi")
         self.assertTrue(removed)
         self.assertEqual(list(json.loads(updated)["provider"]), ["beatapi"])
-        self.assertEqual(len(instalar.NVIDIA_MODELS), 7)
+        self.assertEqual(len(instalar.NVIDIA_MODELS), 10)
 
     def test_register_adds_profiles_without_replacing_existing_provider(self):
         with tempfile.TemporaryDirectory() as tmp:

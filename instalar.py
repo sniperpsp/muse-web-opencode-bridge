@@ -48,9 +48,14 @@ NVIDIA_MODELS = [
     ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "NVIDIA Nemotron 3 Ultra 550B"),
     ("nvidia-laguna", "poolside/laguna-xs-2.1", "NVIDIA Laguna XS 2.1"),
     ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "NVIDIA Nemotron 3.5 Super VL"),
+    ("nvidia-nemotron-nano-omni", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "NVIDIA Nemotron 3 Nano Omni"),
+    ("nvidia-step", "stepfun-ai/step-5-preview", "NVIDIA Step 5 Preview"),
+    ("nvidia-muse-glimmer", "meta/muse-glimmer-30b", "NVIDIA Muse Glimmer 30B"),
 ]
 
-NVIDIA_VISION = {"nvidia-mistral", "nvidia-minimax", "nvidia-nemotron-super-vl"}
+# Testado em 2026-11-06 com imagem sintética (cores e lados corretos). Laguna,
+# Lightning e Ultra devolvem HTTP 400 com imagem: ficam só texto.
+NVIDIA_VISION = {"nvidia-mistral", "nvidia-minimax", "nvidia-nemotron-super-vl", "nvidia-nemotron-bolt", "nvidia-nemotron-nano-omni", "nvidia-step", "nvidia-muse-glimmer"}
 
 
 def say(msg=""):
