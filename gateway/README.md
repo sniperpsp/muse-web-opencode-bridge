@@ -40,7 +40,7 @@ O instalador registra um provedor separado por modelo, todos chamando a API ofic
 ```bash
 gt-nvidia-key                     # grava sua chave em ~/.config/gateway/nvidia.key sem mostrar no terminal
 python3 instalar.py --nvidia      # WSL/Linux
-python3 instalar.py --nvidia --config /mnt/c/Users/<você>/.config/opencode/opencode.jsonc   # OpenCode do Windows
+python3 instalar.py --nvidia --config /mnt/c/Users/<você>/.config/opencode/opencode.jsonc   # OpenCode do Windows (copia a chave pro Windows sozinho)
 ```
 
 Feche e abra o OpenCode e digite **GT NVIDIA** no seletor de modelo. A parte cinza diz para que cada um é bom:

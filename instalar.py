@@ -386,6 +386,30 @@ def register(config_path, blocks):
     return True
 
 
+NVIDIA_KEY_FILE = HOME / ".config" / "gateway" / "nvidia.key"
+
+
+def nvidia_key_saved():
+    return NVIDIA_KEY_FILE.exists() and NVIDIA_KEY_FILE.stat().st_size > 0
+
+
+def ensure_nvidia_key():
+    """Garante a chave da pessoa em ~/.config/gateway/nvidia.key (nunca no repositório).
+
+    Reaproveita gt-nvidia-key: pede a chave sem mostrar na tela e valida na NVIDIA.
+    Sem terminal interativo (agente rodando em segundo plano), não pede: avisa.
+    """
+    if nvidia_key_saved():
+        say("  ✓ chave NVIDIA já salva em ~/.config/gateway/nvidia.key")
+        return True
+    if not sys.stdin.isatty():
+        say("  ! sem chave NVIDIA salva: a pessoa precisa rodar `gt-nvidia-key` no terminal dela e depois `python3 instalar.py --nvidia`.")
+        return False
+    say("  A chave é grátis em https://build.nvidia.com (Get API Key, começa com nvapi-). Ela fica só nesta máquina.")
+    done = subprocess.run(["bash", str(ROOT / "gateway" / "scripts" / "gt-nvidia-key")]).returncode == 0
+    return done and nvidia_key_saved()
+
+
 def configure_nvidia_opencode(config_path):
     path = Path(config_path)
     if path.exists():
@@ -441,6 +465,47 @@ def install_gateway():
         say(f'  ! {bindir} não está no seu PATH. Acrescente ao ~/.bashrc:  export PATH="$HOME/.local/bin:$PATH"')
 
 
+def choose_nvidia(args):
+    """Pergunta (ou lê das opções) se a pessoa quer os 10 modelos GT NVIDIA."""
+    if args.sem_nvidia:
+        return False
+    if args.com_nvidia:
+        return True
+    return ask("\nAdicionar também os 10 modelos GT NVIDIA (API oficial da NVIDIA, grátis, precisa de chave)?", "s" if nvidia_key_saved() else "n")
+
+
+def windows_key_target(config_path):
+    """OpenCode do Windows (config em /mnt/<disco>/Users/<pessoa>/...) lê a chave do HOME do Windows."""
+    parts = Path(config_path).resolve().parts
+    if len(parts) > 4 and parts[1] == "mnt" and parts[3].lower() == "users":
+        return Path(*parts[:5]) / ".config" / "gateway" / "nvidia.key"
+    return None
+
+
+def copy_key_for_windows(config_path):
+    target = windows_key_target(config_path)
+    if not target or (target.exists() and target.stat().st_size > 0):
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(NVIDIA_KEY_FILE, target)
+    say(f"  ✓ chave copiada para o OpenCode do Windows ({target.parent})")
+
+
+def install_nvidia_profiles(config_path):
+    step("Modelos GT NVIDIA")
+    if not ensure_nvidia_key():
+        return False
+    copy_key_for_windows(config_path)
+    return configure_nvidia_opencode(config_path)
+
+
+def finish_nvidia_only(config_path):
+    ok = install_nvidia_profiles(config_path)
+    say("RESULTADO " + json.dumps({"prontas": [], "sem_login": [], "gateway": False, "nvidia": bool(ok)}))
+    if ok:
+        say("Feche e abra o OpenCode e digite GT NVIDIA no seletor de modelo.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Instalador das pontes web")
     ap.add_argument("--pontes", help="lista separada por vírgula: " + ",".join(BRIDGES))
@@ -448,16 +513,14 @@ def main():
     ap.add_argument("--sem-gateway", action="store_true", help="não instala o gateway (gt-claude/gt-opencode)")
     ap.add_argument("--sem-abrir", action="store_true", help="não abre o navegador (só mostra os endereços de login)")
     ap.add_argument("--sem-teste", action="store_true", help="não faz a chamada de teste (pong)")
-    ap.add_argument("--nvidia", action="store_true", help="configura perfis NVIDIA diretos no OpenCode, sem gateway")
+    ap.add_argument("--nvidia", action="store_true", help="só os perfis GT NVIDIA no OpenCode (sem pontes nem gateway)")
+    ap.add_argument("--com-nvidia", action="store_true", help="instala também os perfis GT NVIDIA, sem perguntar")
+    ap.add_argument("--sem-nvidia", action="store_true", help="não pergunta nem instala os perfis GT NVIDIA")
     ap.add_argument("--config", default=str(HOME / ".config" / "opencode" / "opencode.jsonc"), help="arquivo de configuração do OpenCode")
     args = ap.parse_args()
 
     if args.nvidia:
-        step("Configurando modelos NVIDIA diretos no OpenCode")
-        if not configure_nvidia_opencode(args.config):
-            sys.exit("Não foi possível atualizar a configuração; o arquivo anterior foi preservado.")
-        say("RESULTADO " + json.dumps({"perfis_nvidia": [p for p, *_ in NVIDIA_MODELS], "gateway": False}))
-        say("Feche e abra o OpenCode; escolha o perfil NVIDIA desejado no seletor de modelo.")
+        finish_nvidia_only(args.config)
         return
 
     say("Instalador das pontes web → OpenCode / Claude Code")
@@ -474,8 +537,12 @@ def main():
         for name, cfg in BRIDGES.items():
             if ask(f"  {cfg['site']:<9} (memória {cfg['ram']})?", "s" if name in ("deepseek",) else "n"):
                 chosen.append(name)
+    want_nvidia = choose_nvidia(args)
+    if not chosen and not want_nvidia:
+        sys.exit("Nenhuma ponte nem NVIDIA escolhida. Nada a fazer.")
     if not chosen:
-        sys.exit("Nenhuma ponte escolhida. Nada a fazer.")
+        finish_nvidia_only(args.config)
+        return
     use_gateway = not args.sem_gateway and (len(chosen) >= 1)
 
     check_prereqs(need_node=use_gateway)
@@ -510,13 +577,14 @@ def main():
         register(args.config, blocks)
     else:
         say("  nenhuma ponte logada; nada a registrar.")
+    nvidia_ok = want_nvidia and install_nvidia_profiles(args.config)
 
     if use_gateway and logged:
         install_gateway()
 
     step("Pronto")
     # linha para agentes lerem: pontes prontas, sem login e se o gateway foi instalado
-    say("RESULTADO " + json.dumps({"prontas": logged, "sem_login": [n for n in chosen if n not in logged], "gateway": bool(use_gateway and logged)}))
+    say("RESULTADO " + json.dumps({"prontas": logged, "sem_login": [n for n in chosen if n not in logged], "gateway": bool(use_gateway and logged), "nvidia": bool(nvidia_ok)}))
     skipped = [n for n in chosen if n not in logged]
     if logged:
         say("Pontes prontas: " + ", ".join(BRIDGES[n]["site"] for n in logged))
@@ -527,7 +595,7 @@ def main():
         say("  • OpenCode: feche e abra de novo (ele só lê a configuração ao abrir) e escolha o modelo na lista.")
         if use_gateway:
             say("  • Pelo gateway (roteia entre as pontes, modelo único): gt-opencode   ou   gt-claude")
-        say("  • NVIDIA direta no OpenCode, sem gateway: python3 instalar.py --nvidia")
+        say("  • Modelos GT NVIDIA: " + ("já no seletor do OpenCode (digite GT NVIDIA)." if nvidia_ok else "python3 instalar.py --nvidia (precisa de chave: gt-nvidia-key)"))
         say("  • Mais pontes, réplicas e ajustes: README.md e gateway/README.md")
 
 

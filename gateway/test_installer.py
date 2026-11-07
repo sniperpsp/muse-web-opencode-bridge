@@ -51,6 +51,31 @@ class NvidiaProfilesTest(unittest.TestCase):
         self.assertEqual(list(json.loads(updated)["provider"]), ["beatapi"])
         self.assertEqual(len(instalar.NVIDIA_MODELS), 10)
 
+    def test_nvidia_choice_flags_and_key_never_prompted_without_terminal(self):
+        import argparse, io, tempfile
+        from pathlib import Path
+        from unittest import mock
+        flags = lambda **kw: argparse.Namespace(**{"com_nvidia": False, "sem_nvidia": False, **kw})
+        self.assertTrue(instalar.choose_nvidia(flags(com_nvidia=True)))
+        self.assertFalse(instalar.choose_nvidia(flags(sem_nvidia=True)))
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "nvidia.key"
+            with mock.patch.object(instalar, "NVIDIA_KEY_FILE", key), \
+                 mock.patch("sys.stdin", io.StringIO("")), \
+                 mock.patch.object(instalar.subprocess, "run") as run:
+                # sem chave e sem terminal (agente em segundo plano): não pede nada, só avisa
+                self.assertFalse(instalar.ensure_nvidia_key())
+                run.assert_not_called()
+                key.write_text("nvapi-teste")
+                self.assertTrue(instalar.ensure_nvidia_key())
+                # sem terminal, o padrão da pergunta segue a chave já salva
+                self.assertTrue(instalar.choose_nvidia(flags()))
+
+    def test_windows_config_gets_key_in_windows_home(self):
+        from pathlib import Path
+        self.assertEqual(instalar.windows_key_target("/mnt/c/Users/ana/.config/opencode/opencode.jsonc"), Path("/mnt/c/Users/ana/.config/gateway/nvidia.key"))
+        self.assertIsNone(instalar.windows_key_target("/home/ana/.config/opencode/opencode.jsonc"))
+
     def test_register_adds_profiles_without_replacing_existing_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "opencode.json"

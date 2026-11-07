@@ -130,7 +130,7 @@ O instalador sobe as pontes, abre a janela de login de cada site, espera você e
 
 ## NVIDIA direto (sem ponte)
 
-Dez modelos da API oficial da NVIDIA entram no OpenCode como perfis **GT NVIDIA <modelo>**, cada um com "para que é bom" na parte cinza do seletor: `python3 instalar.py --nvidia`. Lista, testes e como acrescentar modelos em [gateway/README.md](gateway/README.md#nvidia-direto-no-opencode). A chave fica só em `~/.config/gateway/nvidia.key`, nunca no repositório.
+Dez modelos da API oficial da NVIDIA entram no OpenCode como perfis **GT NVIDIA <modelo>**, ao lado do GT Auto, cada um com "para que é bom" na parte cinza do seletor. O instalador pergunta se você quer (`python3 instalar.py`), ou rode só eles com `gt-nvidia-key` + `python3 instalar.py --nvidia`. Lista, testes e como acrescentar modelos em [gateway/README.md](gateway/README.md#nvidia-direto-no-opencode). A chave fica só em `~/.config/gateway/nvidia.key`, nunca no repositório.
 
 ## Gateway (OpenCode e Claude Code sobre as pontes)
 
