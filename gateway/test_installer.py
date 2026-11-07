@@ -10,14 +10,18 @@ import instalar
 class NvidiaProfilesTest(unittest.TestCase):
     def test_profiles_pin_one_model_directly(self):
         profiles = instalar.nvidia_blocks()
-        self.assertEqual(set(profiles), {provider for provider, _, _ in instalar.NVIDIA_MODELS})
-        for provider, model, label in instalar.NVIDIA_MODELS:
+        self.assertEqual(set(profiles), {provider for provider, *_ in instalar.NVIDIA_MODELS})
+        for provider, model, label, purpose in instalar.NVIDIA_MODELS:
+            self.assertTrue(label.startswith("GT NVIDIA "), label)
+            self.assertLessEqual(len(label), 23, f"{label} é cortado no seletor do OpenCode")
+            self.assertLessEqual(len(purpose), 28, f"{purpose} é cortado na parte cinza")
             profile = profiles[provider]
             self.assertEqual(profile["npm"], "@ai-sdk/openai-compatible")
             self.assertEqual(profile["options"]["baseURL"], "https://integrate.api.nvidia.com/v1")
             self.assertIn("nvidia.key", profile["options"]["apiKey"])
             self.assertEqual(list(profile["models"]), [model])
             self.assertEqual(profile["models"][model]["name"], label)
+            self.assertEqual(profile["name"], purpose)
             self.assertTrue(profile["models"][model]["tool_call"])
             self.assertEqual(profile["models"][model]["attachment"], provider in instalar.NVIDIA_VISION)
             self.assertEqual(profile["models"][model]["modalities"]["input"], ["text", "image"] if provider in instalar.NVIDIA_VISION else ["text"])

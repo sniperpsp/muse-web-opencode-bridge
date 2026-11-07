@@ -40,17 +40,20 @@ BRIDGES = {
     "gemini": dict(site="Gemini", api=4347, vnc=4348, model="gemini-web", ram="~1 GB"),
 }
 
+# (perfil, modelo, nome no seletor, parte cinza = para que é bom). Textos curtos:
+# o seletor do OpenCode corta o nome em ~23 caracteres e a parte cinza em ~28.
+# "Para que é bom" vem dos testes de 2026-11-06 (texto, ferramenta, imagem, tempo).
 NVIDIA_MODELS = [
-    ("nvidia-mistral", "mistralai/mistral-large-4-1t-a52b", "NVIDIA Mistral Large 4"),
-    ("nvidia-nemotron-bolt", "nvidia/nemotron-3.5-bolt-e4b", "NVIDIA Nemotron 3.5 Bolt E4B"),
-    ("nvidia-minimax", "minimaxai/minimax-m3.1-flash", "NVIDIA MiniMax M3.1 Flash"),
-    ("nvidia-nemotron-lightning", "nvidia/nemotron-3.5-lightning-30b-a3b", "NVIDIA Nemotron 3.5 Lightning"),
-    ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "NVIDIA Nemotron 3 Ultra 550B"),
-    ("nvidia-laguna", "poolside/laguna-xs-2.1", "NVIDIA Laguna XS 2.1"),
-    ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "NVIDIA Nemotron 3.5 Super VL"),
-    ("nvidia-nemotron-nano-omni", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "NVIDIA Nemotron 3 Nano Omni"),
-    ("nvidia-step", "stepfun-ai/step-5-preview", "NVIDIA Step 5 Preview"),
-    ("nvidia-muse-glimmer", "meta/muse-glimmer-30b", "NVIDIA Muse Glimmer 30B"),
+    ("nvidia-nemotron-ultra", "nvidia/nemotron-3-ultra-550b-a55b", "GT NVIDIA Ultra 550B", "Melhor p/ texto · só texto"),
+    ("nvidia-nemotron-super-vl", "nvidia/nemotron-3.5-super-vl-120b-a12b", "GT NVIDIA Super VL", "Melhor p/ ver imagem"),
+    ("nvidia-laguna", "poolside/laguna-xs-2.1", "GT NVIDIA Laguna XS", "Código · rápido · só texto"),
+    ("nvidia-mistral", "mistralai/mistral-large-4-1t-a52b", "GT NVIDIA Mistral L4", "Imagem+texto · caprichado"),
+    ("nvidia-step", "stepfun-ai/step-5-preview", "GT NVIDIA Step 5", "Imagem+texto · bom português"),
+    ("nvidia-muse-glimmer", "meta/muse-glimmer-30b", "GT NVIDIA Muse Glimmer", "Imagem+texto · criativo"),
+    ("nvidia-minimax", "minimaxai/minimax-m3.1-flash", "GT NVIDIA MiniMax 3.1", "Imagem+texto · rápido (P&D)"),
+    ("nvidia-nemotron-nano-omni", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "GT NVIDIA Nano Omni", "Leve e rápido · vê imagem"),
+    ("nvidia-nemotron-lightning", "nvidia/nemotron-3.5-lightning-30b-a3b", "GT NVIDIA Lightning", "Raciocínio rápido · só texto"),
+    ("nvidia-nemotron-bolt", "nvidia/nemotron-3.5-bolt-e4b", "GT NVIDIA Bolt", "Rapidíssimo · tarefa simples"),
 ]
 
 # Testado em 2026-11-06 com imagem sintética (cores e lados corretos). Laguna,
@@ -257,7 +260,7 @@ def nvidia_blocks():
     return {
         provider: {
             "npm": "@ai-sdk/openai-compatible",
-            "name": label,
+            "name": purpose,
             "options": {
                 "baseURL": "https://integrate.api.nvidia.com/v1",
                 "apiKey": "{file:~/.config/gateway/nvidia.key}",
@@ -266,7 +269,7 @@ def nvidia_blocks():
             },
             "models": {model: {"name": label, "tool_call": True, "attachment": provider in NVIDIA_VISION, "modalities": {"input": ["text", "image"] if provider in NVIDIA_VISION else ["text"], "output": ["text"]}, "limit": {"context": 120000, "output": 16000}}},
         }
-        for provider, model, label in NVIDIA_MODELS
+        for provider, model, label, purpose in NVIDIA_MODELS
     }
 
 
@@ -453,7 +456,7 @@ def main():
         step("Configurando modelos NVIDIA diretos no OpenCode")
         if not configure_nvidia_opencode(args.config):
             sys.exit("Não foi possível atualizar a configuração; o arquivo anterior foi preservado.")
-        say("RESULTADO " + json.dumps({"perfis_nvidia": [p for p, _, _ in NVIDIA_MODELS], "gateway": False}))
+        say("RESULTADO " + json.dumps({"perfis_nvidia": [p for p, *_ in NVIDIA_MODELS], "gateway": False}))
         say("Feche e abra o OpenCode; escolha o perfil NVIDIA desejado no seletor de modelo.")
         return
 
