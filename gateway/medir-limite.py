@@ -2,7 +2,7 @@
 # Uso: python3 gateway/medir-limite.py <provedor do opencode.jsonc> <tamanhos em mil chars...>   ex.: deepseek 100 300 500
 import re,json,os,time,random,urllib.request,sys
 prov=sys.argv[1]
-if os.environ.get('BASE'):  # ponte fora do opencode.jsonc: BASE=http://127.0.0.1:4361/v1 KEY=... MODEL=qwen-web
+if os.environ.get('BASE'):  # ponte fora do opencode.jsonc: BASE=http://127.0.0.1:43xx/v1 KEY=... MODEL=<modelo>
     key=os.environ['KEY'];base=os.environ['BASE'];model=os.environ['MODEL']
 else:
     t=re.sub(r'^\s*//.*$','',open(os.path.expanduser('~/.config/opencode/opencode.jsonc')).read(),flags=re.M)

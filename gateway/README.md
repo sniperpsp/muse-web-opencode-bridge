@@ -22,7 +22,7 @@ gt-claude      # Claude Code pelo gateway (sobe o gateway se preciso)
 gt-opencode    # OpenCode pelo gateway, modelo gateway/gt-auto
 ```
 
-- `gt-gateway` lê as pontes principais do seu `~/.config/opencode/opencode.jsonc` (provedores `deepseek`, `muse`, `chatgpt`, `gemini`) e as extras de `~/.config/gateway/bridges.json` ([exemplo](scripts/bridges.example.json)). Réplicas só entram se o container existir. Na primeira execução ele cria a chave do gateway (`~/.config/gateway/key`) e o `gt-claude` cria o `settings.json`. O log fica em `~/.config/gateway/gateway.log`.
+- `gt-gateway` lê as pontes principais do seu `~/.config/opencode/opencode.jsonc` (provedores `deepseek`, `muse`, `chatgpt`, `gemini`). Réplicas só entram se o container existir. Na primeira execução ele cria a chave do gateway (`~/.config/gateway/key`) e o `gt-claude` cria o `settings.json`. O log fica em `~/.config/gateway/gateway.log`.
 - Para o OpenCode, acrescente o provedor de [`scripts/opencode-provider.example.jsonc`](scripts/opencode-provider.example.jsonc). A chave vem de `~/.config/gateway/key` por `{file:...}`, sem ir para o arquivo.
 - Para o Claude Code, `~/.config/gateway/settings.json` usa `apiKeyHelper` (`cat ~/.config/gateway/key`) e `ANTHROPIC_BASE_URL=http://127.0.0.1:4350`.
 
@@ -96,12 +96,11 @@ Campos de cada item de `BACKENDS`:
 
 ```json
 {"tiers":[
-  {"max":6000,"chain":["mistral","qwen","deepseek","muse","chatgpt","gemini"]},
   {"chain":["deepseek","muse","chatgpt","gemini"]}
 ]}
 ```
 
-Conversa pequena tenta as pontes menores primeiro; maior vai para o DeepSeek. O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um modelo só ("GT Auto"). Dentro de uma sessão a conversa só cresce: ela sobe de faixa e nunca volta para uma ponte menor. Se uma ponte falha (cota, captcha, erro, resposta inválida), cai para a próxima; a cadeia sempre termina nas pontes grandes.
+A cadeia padrão vai do DeepSeek (o mais rápido e o que mais aguenta) para Muse, ChatGPT e Gemini. O nome do modelo pedido é ignorado, então o OpenCode e o Claude Code usam um modelo só ("GT Auto"). Se uma ponte falha (cota, captcha, erro, resposta inválida), cai para a próxima.
 
 **Por nome de modelo.** `{"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}`: a chave é um trecho do nome pedido (o Claude Code usa `haiku` nos subagentes). Vence a primeira que casar.
 

@@ -107,4 +107,4 @@ Diga à pessoa:
 ## Mais detalhes
 
 - Como tudo funciona e como mexer: [`README.md`](README.md), [`gateway/README.md`](gateway/README.md) e os limites medidos em [`gateway/LIMITES.md`](gateway/LIMITES.md).
-- Pontes extras (Qwen, Mistral…) e réplicas são opcionais e ficam fora deste roteiro.
+- Réplicas de ponte (containers `-2`, `-3`) são opcionais e ficam fora deste roteiro.

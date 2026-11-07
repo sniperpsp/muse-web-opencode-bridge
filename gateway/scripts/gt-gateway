@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Roteamento por demanda: conversa pequena (<=6000 chars) tenta Mistral/Qwen antes; maior vai para DeepSeek e as demais.
+# Roteamento por demanda: DeepSeek primeiro, depois Muse, ChatGPT e Gemini.
 # Sobe o gateway (porta 4350) se ainda não estiver de pé. Usado por gt-claude e gt-opencode.
 GW_DIR="${GT_REPO:-/mnt/e/muse-opencode-bridge}/gateway"
 CFG=~/.config/gateway
@@ -17,8 +17,6 @@ except (OSError, ValueError):
 # (provedor, limite de caracteres aceito pela ponte)
 order=[('deepseek',450000,'deepseek-opencode-bridge'),('muse',450000,'muse-opencode-bridge'),('chatgpt',450000,'chatgpt-opencode-bridge'),('gemini',100000,'gemini-opencode-bridge')]  # gemini: lento, por último (ver LIMITES.md)
 out=[]
-bj=os.path.expanduser('~/.config/gateway/bridges.json')
-if os.path.exists(bj): out+=json.load(open(bj))  # pontes pequenas (Mistral, Qwen): chaves fora do opencode.jsonc
 REPL={'deepseek':[(2,4437),(3,4537)],'chatgpt':[(2,4427)]}   # réplicas (docker run ...-2/-3), mesma chave da original
 CONC={'muse':2}                                                         # Muse tem 2 abas na própria ponte
 for n,mx,ct in order:
@@ -32,7 +30,7 @@ for n,mx,ct in order:
 print(json.dumps(out))
 PY
 ) || { echo "não consegui montar as pontes a partir do opencode.jsonc" >&2; exit 1; }
-  export ROUTES='{"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek","muse","chatgpt","gemini"]},{"chain":["deepseek","muse","chatgpt","gemini"]}]}'
+  export ROUTES='{"tiers":[{"chain":["deepseek","muse","chatgpt","gemini"]}]}'
   export BACKENDS GATEWAY_KEY="$(cat $CFG/key)" GATEWAY_BUDGET="${GATEWAY_BUDGET:-400000}"
   GATEWAY_PORT=$PORT nohup node "$GW_DIR/server.js" >> $LOG 2>&1 &
   for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fs -m 1 http://127.0.0.1:$PORT/health >/dev/null && break; sleep 0.5; done

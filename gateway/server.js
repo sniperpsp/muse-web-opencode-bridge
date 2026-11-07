@@ -34,7 +34,7 @@ const LEVELS = [
 const BACKENDS = process.env.BACKENDS ? JSON.parse(process.env.BACKENDS) : [{ name: "default", url: UPSTREAM_URL, key: UPSTREAM_KEY, model: UPSTREAM_MODEL, maxChars: 240000 }];
 // ROUTES (JSON), dois formatos:
 //  por modelo:  {"haiku":["chatgpt","muse"],"default":["deepseek","muse","chatgpt"]}  (a chave é um trecho do nome do modelo pedido)
-//  por demanda: {"tiers":[{"max":6000,"chain":["mistral","qwen","deepseek"]},{"chain":["deepseek","muse","chatgpt"]}]}
+//  por demanda: {"tiers":[{"max":60000,"chain":["deepseek","muse"]},{"chain":["deepseek","muse","chatgpt","gemini"]}]}
 //    "demanda" = tamanho (chars) da conversa, sem sistema/ferramentas; vence a primeira faixa cujo max comporta (a última não tem max).
 //    Dentro de uma sessão a conversa só cresce, então ela sobe de faixa e nunca volta para uma ponte menor.
 const ROUTES = process.env.ROUTES ? JSON.parse(process.env.ROUTES) : {};

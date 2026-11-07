@@ -9,7 +9,6 @@ Pontes que expõem a interface web de um chat de IA como uma API local compatív
 | Peça | O que é |
 |---|---|
 | **Pontes** (`muse/`, `chatgpt/`, `deepseek/`, `gemini/`) | uma por site, cada uma com seu Dockerfile, compose, `src/` e testes |
-| **`universal/`** | imagem única para pontes extras: `PROVIDER=<nome>` escolhe o adaptador em `src/sites/` (Qwen, Mistral, Kimi, Z.ai, MiniMax, Duck.ai, DeepSeek) |
 | **`gateway/`** | API `POST /v1/messages` (Anthropic) que roteia entre as pontes, liga e desliga os containers, ajusta o prompt ao limite de cada uma e confere as respostas |
 
 ## As quatro pontes
@@ -85,29 +84,6 @@ bash instalar.sh
 
 5. Reinicie o OpenCode e escolha o modelo na lista. O OpenCode só lê a configuração ao abrir: janelas e o servidor `opencode serve` que já estavam rodando precisam ser reiniciados.
 
-## Pontes extras (`universal/`)
-
-Uma imagem, um container por provedor. O adaptador de cada site fica em `universal/src/sites/<provedor>.js` (seletores, regras de login e de resposta).
-
-```bash
-cd universal
-docker build -t universal-bridge:local .
-PROVIDER=qwen PORT_API=4361 PORT_VNC=4362 docker compose -p bridge-qwen up -d
-# faça login no noVNC (porta 4362) e pegue a chave: docker exec bridge-qwen cat /data/api-key
-```
-
-| Provedor | Portas (API / noVNC) | Maior prompt medido | Observação |
-|---|---|---|---|
-| `mistral` | 4367 / 4368 | 60.000 | rápido; entra no gateway para conversas pequenas |
-| `qwen` | 4361 / 4362 | 70.000 | idem |
-| `minimax` | 4373 / 4374 | ~90.000 | é um agente: gasta créditos; captcha trava a página |
-| `zai` | 4365 / 4366 | 30.000 | de 100k perde o miolo do texto sem avisar |
-| `kimi` | 4363 / 4364 | 30.000 | a cota gratuita esgota em poucas chamadas |
-| `duck` | 4369 / 4370 | 10.000 | sem login; o site limita a mensagem a 16.000 caracteres |
-| `deepseek` | — | — | adaptador de referência |
-
-O Copilot não funciona: a Microsoft bloqueia o login no Chromium automatizado. Para um site novo, copie um adaptador (por exemplo `qwen.js`) e ajuste os seletores com o site logado. O contrato são os exports que `universal/src/server.js` usa: `DEFAULT_URL`, `MESSAGE_UNIT_SELECTOR`, `ASSISTANT_TEXT_SELECTOR`, `STREAMING_SELECTOR`, `COMPOSER_SELECTOR`, `SEND_SELECTOR`, `CONVERSATION_PATH_RE` e as funções `stampMessages`, `messageRole`, `isAssistantMessageId`. Opcionais: `PAGE_CSS` (esconde elementos por CSS) e `LIMIT_TEXT_RE` (texto de cota/fila do site, vira 429 `provider_quota`).
-
 ## Instalação
 
 **Pelo seu agente de IA (o jeito mais simples).** Abra o Claude Code, o OpenCode ou outro agente no clone do repositório e peça:
@@ -167,7 +143,6 @@ muse/       ponte do Muse AI (instalador Windows/WSL, docs, testes)
 chatgpt/    ponte do ChatGPT (chatgpt.com)
 deepseek/   ponte do DeepSeek (chat.deepseek.com)
 gemini/     ponte do Gemini (gemini.google.com)
-universal/  imagem única das pontes extras; src/sites/<provedor>.js
 gateway/    server.js (sem dependências), test.mjs, LIMITES.md, medir-limite.py
   scripts/  gt-gateway, gt-claude, gt-opencode, replicar.py e exemplos de configuração
 ```
