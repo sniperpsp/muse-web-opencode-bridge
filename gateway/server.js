@@ -52,7 +52,14 @@ export function chainFor(model, backends = BACKENDS, routes = ROUTES, demand = 0
 }
 // Réplicas do mesmo grupo: a menos ocupada primeiro; entre iguais, a que já está ligada (evita esperar a subida do container).
 const running = new Set();
-setInterval(async () => { const out = await docker("ps", "--format", "{{.Names}}"); if (out) { running.clear(); out.split("\n").forEach((n) => running.add(n)); } }, 10000).unref();
+let refreshRunningAt = 0;
+async function refreshRunning() {
+  if (Date.now() < refreshRunningAt) return;
+  refreshRunningAt = Date.now() + 10000;
+  const out = await docker("ps", "--format", "{{.Names}}");
+  running.clear();
+  if (out) out.split("\n").forEach((name) => running.add(name));
+}
 export function orderChain(chain, load = () => 0, isUp = () => true, cooling = () => false) {
   const seen = [];
   const rank = new Map();
@@ -73,12 +80,14 @@ const startedByUs = new Set();
 const lastUse = new Map();
 const inflight = new Map();
 const starting = new Map();
+const stopping = new Map();
 const startedAt = new Map();
 const docker = (...args) => new Promise((resolve) => execFile("docker", args, { timeout: 60000 }, (e, out) => resolve(e ? "" : String(out).trim())));
 export const isWarming = (msg, code = "") => /reconnecting|browser_/i.test(code) || /reconect|carregando|n[aã]o ficou pronta|indispon[ií]vel|ainda n[aã]o/i.test(msg || "");
 async function ensureUp(b) {
   if (!b.container) return;
   lastUse.set(b.name, Date.now());
+  if (stopping.has(b.name)) await stopping.get(b.name);
   if (starting.has(b.name)) { await starting.get(b.name); return; }
   if ((await docker("inspect", "-f", "{{.State.Running}}", b.container)) === "true") return;
   if (!starting.has(b.name)) {
@@ -99,11 +108,14 @@ async function ensureUp(b) {
 }
 setInterval(async () => {
   for (const b of BACKENDS) {
-    if (!b.container || !startedByUs.has(b.name) || inflight.get(b.name) > 0) continue;
+    if (!b.container || stopping.has(b.name) || !startedByUs.has(b.name) || inflight.get(b.name) > 0) continue;
     if (Date.now() - (lastUse.get(b.name) || 0) < IDLE_MS) continue;
     console.log(`[${new Date().toISOString()}] desligando ${b.container} (ocioso)`);
-    await docker("stop", b.container);
-    startedByUs.delete(b.name);
+    const stop = docker("stop", b.container).then((result) => {
+      if (result) startedByUs.delete(b.name);
+    }).finally(() => stopping.delete(b.name));
+    stopping.set(b.name, stop);
+    await stop;
   }
 }, 60000).unref();
 if (!BACKENDS.length || BACKENDS.some((b) => !b.key)) { console.error("Defina UPSTREAM_KEY (ou BACKENDS com key em todos)."); process.exit(1); }
@@ -394,6 +406,7 @@ async function handleMessages(req, res) {
     let message, last;
     const now = Date.now();
     const chain = chainFor(body.model, BACKENDS, ROUTES, demandOf(body));
+    if (chain.some((b) => b.container)) await refreshRunning();
     const order = orderChain(chain, (x) => inflight.get(x.name) || 0, (x) => !x.container || running.has(x.container), (x) => (downUntil.get(x.name) || 0) > now);
     let sizeErr;
     for (const [i, b] of order.entries()) {
