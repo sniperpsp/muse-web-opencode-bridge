@@ -178,6 +178,11 @@ test("decodes structured operations and final answers without accepting unknown 
   assert.deepEqual(parseToolCall(json, tools), { name: "shell", arguments: { command: "pwd" } });
   assert.deepEqual(parseToolCall('```json\n' + json + '\n```', tools), { name: "shell", arguments: { command: "pwd" } });
   assert.equal(parseToolCall(json, []), null);
+  assert.deepEqual(parseToolCall('{"type":"shell","name":"shell","arguments":{"command":"pwd"}}', tools), { name: "shell", arguments: { command: "pwd" } });
+  assert.deepEqual(parseToolCall('{"type":"shell","arguments":{"command":"pwd"}}', tools), { name: "shell", arguments: { command: "pwd" } });
+  assert.equal(looksLikeToolCall('{"type":"shell","arguments":{}}'), true);
+  assert.equal(parseToolCall('{"type":"outra","arguments":{"command":"pwd"}}', tools), null);
+  assert.equal(parseToolCall('{"type":"final","text":"shell"}', tools), null);
   assert.equal(parseToolCall("null", tools), null);
   assert.equal(parseToolCall('{"name":"shell","arguments":{"command":"pwd"}}', tools), null);
   assert.equal(finalText('{"type":"final","text":"Diretório confirmado."}'), "Diretório confirmado.");

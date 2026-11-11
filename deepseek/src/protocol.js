@@ -190,8 +190,11 @@ export function parseToolCall(text, tools = []) {
   const match = /<opencode_tool_call>\s*([\s\S]*?)\s*<\/opencode_tool_call>/i.exec(text);
   try {
     const call = withName(JSON.parse(match ? match[1] : responseJson(text)), tools);
-    if (!match && call?.type !== "tool_call") return null;
     if (!call || typeof call !== "object") return null;
+    // O modelo às vezes põe o nome da ferramenta no type: {"type":"grep","name":"grep"} ou {"type":"execute","arguments":{}} sem name.
+    const typeIsTool = typeof call.type === "string" && tools.some((tool) => tool?.type === "function" && tool.function?.name === call.type);
+    if (typeIsTool && (call.name === undefined || call.name === call.type)) call.name = call.type;
+    else if (!match && call.type !== "tool_call") return null;
     if (typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) return null;
     const requested = tools.some((tool) => tool?.type === "function" && tool.function?.name === call.name);
     return requested ? { name: call.name, arguments: call.arguments } : null;
