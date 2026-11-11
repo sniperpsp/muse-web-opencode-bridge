@@ -171,8 +171,9 @@ export function looksLikeToolCall(text) {
     || /^\s*\{\s*"type"\s*:\s*"([\w-]+)"\s*,\s*(?:"name"\s*:\s*"\1"|"arguments"\s*:\s*\{)/.test(responseJson(text));
 }
 
+// O site às vezes entrega o bloco sem as crases, só com o rótulo na frente: json {"type":"tool_call",...}
 function responseJson(text) {
-  return text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1");
+  return text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1").replace(/^json\s*(?=\{)/i, "");
 }
 
 export function finalText(text) {

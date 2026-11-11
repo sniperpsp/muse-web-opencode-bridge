@@ -208,9 +208,10 @@ export function looksLikeToolCall(text) {
   return /^\s*(?:<opencode_tool_call>|\{[\s\S]*?"type"\s*:\s*"tool_call"|\{\s*"type"\s*:\s*"[a-z_]+"\s*,\s*"arguments")/i.test(responseJson(text));
 }
 
+// O site às vezes entrega o bloco sem as crases, só com o rótulo na frente: json {"type":"tool_call",...}
 function responseJson(text) {
   // O DeepSeek às vezes deixa "</br>" ou texto solto depois do JSON; fica só o objeto, do primeiro "{" ao último "}".
-  const unfenced = text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1").replace(/(?:\s*<\/?br\s*\/?>)+\s*$/i, "");
+  const unfenced = text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1").replace(/^json\s*(?=\{)/i, "").replace(/(?:\s*<\/?br\s*\/?>)+\s*$/i, "");
   const trimmed = unfenced.trim();
   if (!trimmed.startsWith("{")) return unfenced;
   const end = trimmed.lastIndexOf("}");
