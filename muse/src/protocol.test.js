@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
+import { conversationMessages, currentReply, finalText, pruneConversations, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, transcriptDelta } from "./protocol.js";
 import { checkPromptLength, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { updateStatus } from "./updates.js";
 import { spawn } from "node:child_process";
@@ -370,4 +370,12 @@ test("guardrail: final com aspas sem escape no text ainda é desembrulhado (resu
   assert.throws(() => JSON.parse(broken));
   assert.equal(finalText(broken), '## Objective\n- usar replyToMessageId "b2c2" em E:\\repo\n\n## Next Move\n1. (none)');
   assert.equal(finalText("texto solto {sem envelope}"), "texto solto {sem envelope}");
+});
+
+test("guardrail: conversas paradas além do prazo saem; a atual e as com envio pendente ficam", () => {
+  const current = { usedAt: 0 };
+  const map = new Map([["atual", current], ["velha", { usedAt: 0 }], ["pendente", { usedAt: 0, pendingSubmission: {} }], ["sem-data", {}], ["nova", { usedAt: 900 }]]);
+  pruneConversations(map, current, 500, 1000);
+  assert.deepEqual([...map.keys()], ["atual", "pendente", "sem-data", "nova"]);
+  assert.equal(map.get("sem-data").usedAt, 1000);
 });

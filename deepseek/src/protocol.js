@@ -336,3 +336,13 @@ export function toMarkdown(root) {
   };
   return walk(root).replace(/\n{3,}/g, "\n\n").trim();
 }
+
+// Conversas paradas há mais de ttlMs saem do arquivo; sem isso ele cresce para sempre e é regravado inteiro a cada envio.
+// A conversa em uso e as que têm envio pendente ficam; as antigas, sem data, ganham a data de agora e vencem um prazo depois.
+export function pruneConversations(conversations, current, ttlMs, now = Date.now()) {
+  if (current) current.usedAt = now;
+  for (const [id, item] of conversations) {
+    item.usedAt ??= now;
+    if (item !== current && !item.pendingSubmission && now - item.usedAt > ttlMs) conversations.delete(id);
+  }
+}

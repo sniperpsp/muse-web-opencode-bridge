@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { conversationMessages, currentReply, finalText, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, toMarkdown } from "./protocol.js";
+import { conversationMessages, currentReply, finalText, pruneConversations, localTitle, looksLikeToolCall, parseContent, parseToolCall, simpleGreeting, toMarkdown } from "./protocol.js";
 import { capMessages, checkPromptLength, composerText, fitHistory, isDeliveryError, isPromptSizeError, needsRotation } from "./protocol.js";
 import { checkUpdate } from "./updates.js";
 import { createRequestQueue } from "./queue.js";
@@ -287,6 +287,7 @@ async function saveSessionState(state) {
 
 async function saveConversations() {
   const temporary = `${CONVERSATIONS_FILE}.tmp`;
+  pruneConversations(conversations, conversation, Number(process.env.MUSE_CONVERSATION_TTL_DAYS || 7) * 86400000);
   await writeFile(temporary, JSON.stringify(Object.fromEntries(conversations)), { mode: 0o600 });
   await rename(temporary, CONVERSATIONS_FILE);
 }
