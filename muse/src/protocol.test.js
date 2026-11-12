@@ -364,3 +364,10 @@ test("parseToolCall accepts raw newlines inside JSON strings", () => {
   const text = '```json\n{"type":"tool_call","name":"bash","arguments":{"command":"echo a\necho b"}}\n```';
   assert.deepEqual(parseToolCall(text, tools), { name: "bash", arguments: { command: "echo a\necho b" } });
 });
+
+test("guardrail: final com aspas sem escape no text ainda é desembrulhado (resumo de compactação do OpenCode)", () => {
+  const broken = '{"type":"final","text":"## Objective\\n- usar replyToMessageId "b2c2" em E:\\\\repo\\n\\n## Next Move\\n1. (none)"}';
+  assert.throws(() => JSON.parse(broken));
+  assert.equal(finalText(broken), '## Objective\n- usar replyToMessageId "b2c2" em E:\\repo\n\n## Next Move\n1. (none)');
+  assert.equal(finalText("texto solto {sem envelope}"), "texto solto {sem envelope}");
+});

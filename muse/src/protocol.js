@@ -193,11 +193,20 @@ function responseJson(text) {
   return text.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, "$1").replace(/^json\s*(?=\{)/i, "");
 }
 
+// O modelo às vezes deixa aspas sem escape dentro do "text" e o JSON não fecha; o envelope é fixo, então o miolo sai por regex.
+const BROKEN_FINAL = /^\{\s*"type"\s*:\s*"final"\s*,\s*"text"\s*:\s*"([\s\S]*)"\s*\}$/;
+const ESCAPES = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" };
+function brokenFinalText(json) {
+  const match = BROKEN_FINAL.exec(json.trim());
+  return match ? match[1].replace(/\\(u[0-9a-fA-F]{4}|[\s\S])/g, (_, c) => c.length === 5 ? String.fromCharCode(parseInt(c.slice(1), 16)) : ESCAPES[c] ?? c) : null;
+}
+
 export function finalText(text) {
+  const json = responseJson(text);
   try {
-    const value = JSON.parse(responseJson(text));
+    const value = JSON.parse(json);
     return value?.type === "final" && typeof value.text === "string" ? value.text : text;
-  } catch { return text; }
+  } catch { return brokenFinalText(json) ?? text; }
 }
 export function checkPromptLength(prompt, limit) {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Limite de texto inválido.");

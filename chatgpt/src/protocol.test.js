@@ -428,3 +428,10 @@ test("guardrail: retomada de envio pendente não exige a caixa de mensagem (evit
   const code = await readFile(fileURLToPath(new URL("./server.js", import.meta.url)), "utf8");
   assert.match(code, /pendingSubmission\?\.phase !== "waiting"/);
 });
+
+test("guardrail: final com aspas sem escape no text ainda é desembrulhado (resumo de compactação do OpenCode)", () => {
+  const broken = '{"type":"final","text":"## Objective\\n- usar replyToMessageId "b2c2" em E:\\\\repo\\n\\n## Next Move\\n1. (none)"}';
+  assert.throws(() => JSON.parse(broken));
+  assert.equal(finalText(broken), '## Objective\n- usar replyToMessageId "b2c2" em E:\\repo\n\n## Next Move\n1. (none)');
+  assert.equal(finalText("texto solto {sem envelope}"), "texto solto {sem envelope}");
+});
