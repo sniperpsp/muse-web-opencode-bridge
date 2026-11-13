@@ -165,6 +165,32 @@ function parseDsml(text, tools) {
   return { name: invoke[1], arguments: args };
 }
 
+// O modelo às vezes escreve uma frase antes do JSON da chamada: "Preciso ver o site... {"type":"tool_call",...}".
+// Nesse caso o objeto é extraído pelo balanço de chaves (respeitando strings), sem depender de o texto inteiro ser JSON.
+function embeddedToolCall(text) {
+  const start = text.search(/\{\s*"type"\s*:\s*"tool_call"/i);
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 export function parseToolCall(text, tools = []) {
   const dsml = hasDsml(text) ? parseDsml(text, tools) : null;
   if (dsml) return dsml;
@@ -189,7 +215,7 @@ export function parseToolCall(text, tools = []) {
   }
   const match = /<opencode_tool_call>\s*([\s\S]*?)\s*<\/opencode_tool_call>/i.exec(text);
   try {
-    const call = withName(JSON.parse(match ? match[1] : responseJson(text)), tools);
+    const call = withName(JSON.parse(match ? match[1] : (embeddedToolCall(text) ?? responseJson(text))), tools);
     if (!call || typeof call !== "object") return null;
     // O modelo às vezes põe o nome da ferramenta no type: {"type":"grep","name":"grep"} ou {"type":"execute","arguments":{}} sem name.
     const typeIsTool = typeof call.type === "string" && tools.some((tool) => tool?.type === "function" && tool.function?.name === call.type);

@@ -185,6 +185,11 @@ test("decodes structured operations and final answers without accepting unknown 
   assert.equal(parseToolCall('{"type":"final","text":"shell"}', tools), null);
   assert.deepEqual(parseToolCall('json {"type":"tool_call","name":"shell","arguments":{"command":"pwd"}}', tools), { name: "shell", arguments: { command: "pwd" } });
   assert.equal(looksLikeToolCall('json\n{"type":"tool_call","name":"shell","arguments":{}}'), true);
+  // Texto antes do JSON (caso real): a chamada precisa ser extraída, não descartada.
+  const withProse = 'Preciso ver o site publicado antes de especificar: leio a versão de revisão.\n{"type":"tool_call","name":"shell","arguments":{"command":"pwd"}}';
+  assert.deepEqual(parseToolCall(withProse, tools), { name: "shell", arguments: { command: "pwd" } });
+  assert.deepEqual(parseToolCall('Vou executar.\n{"type":"tool_call","name":"shell","arguments":{"command":"echo \\"oi} tudo\\""}}', tools), { name: "shell", arguments: { command: 'echo "oi} tudo"' } });
+  assert.equal(parseToolCall('Sem chamada aqui, só texto.', tools), null);
   assert.equal(parseToolCall("null", tools), null);
   assert.equal(parseToolCall('{"name":"shell","arguments":{"command":"pwd"}}', tools), null);
   assert.equal(finalText('{"type":"final","text":"Diretório confirmado."}'), "Diretório confirmado.");
